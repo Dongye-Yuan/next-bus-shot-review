@@ -109,3 +109,30 @@ dialog::backdrop { background: #060b0cbb; }
 .member-list { margin: 12px 0; }
 .member-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 7px 0; border-top: 1px solid var(--line); }
 .member-row span { flex: 1; overflow-wrap: anywhere; }
+.project-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  max-width: 1590px; padding: 14px clamp(16px, 3vw, 44px) 0; margin-inline: auto;
+}
+.project-bar label, #editor-form label { color: var(--muted); }
+.project-bar select, #editor-form input {
+  min-height: 36px; max-width: 100%; min-width: 0; padding: 5px 9px; font: inherit;
+  color: var(--ink); background: #192224; border: 1px solid var(--line); border-radius: 6px;
+}
+.project-bar select { width: min(300px, 100%); }
+.project-bar select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.brand, .brand > div { min-width: 0; }
+.brand-icon { flex: 0 0 41px; }
+.project, .shot-tab, .section-head h2, .context { overflow-wrap: anywhere; }
+.context { white-space: pre-wrap; }
+.rail .section-head, .review > .section-head { flex-wrap: wrap; margin-bottom: 10px; }
+.rail h2 { margin: 0; }
+.shot-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+#editor-form, #editor-shot-fields { display: grid; gap: 8px; }
+#editor-form { gap: 12px; }
+#editor-form .actions { justify-content: flex-end; }
+#editor-form .actions button { min-height: 36px; }
+@media (max-width: 660px) {
+  .masthead { flex-wrap: wrap; }
+  .header-actions { justify-content: flex-start; }
+  .project-bar { padding-inline: 12px; }
+}

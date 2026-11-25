@@ -1,16 +1,11 @@
-const clips = [
-  { id: "01", title: "雨夜站棚", duration: 4, context: "双人中景，建立站棚与人物站位。" },
-  { id: "02", title: "林澈近景", duration: 4, context: "核对林澈本人左眉尾的浅疤。" },
-  { id: "03", title: "许棠看伞", duration: 4, context: "核对黄色发夹是否在许棠本人右侧。" },
-  { id: "04", title: "开伞与共伞", duration: 5, context: "检查伞面尺寸、伞柄和两人的外观。两个通过版本都可选用。" },
-];
-
-let state = { versions: [], selected: {}, activity: [], openShot: "03" };
+let clips = [];
+let projects = [];
+let activeProject = "demo";
+let state = { versions: [], selected: {}, activity: [], openShot: null };
 let revision = 0;
 let role = "viewer";
 let ready = false;
 let busy = false;
-const urls = new Map();
 const drafts = new Map();
 const statuses = { approved: "已通过", rejected: "已退回", pending: "待审" };
 const $ = (id) => document.getElementById(id);
@@ -31,53 +26,109 @@ function notice(message, error = false) {
   $("notice").classList.toggle("error", error);
   $("notice").hidden = !message;
 }
-async function refreshWorkspace() {
-  const response = await fetch("/api/state", { cache: "no-store" });
-  if (!response.ok) throw new Error("无法打开团队记录，请刷新重试。");
-  const data = await response.json();
-  state = { ...data.state, openShot: state.openShot };
+const projectKey = "shot-review.active-project";
+const scopedPath = (path, project = activeProject) => path + "?project=" + encodeURIComponent(project);
+const shotNumber = (index) => String(index + 1).padStart(2, "0");
+const currentShot = () => clips.find((clip) => clip.id === state.openShot);
+
+function rememberProject(id) {
+  try { localStorage.setItem(projectKey, id); } catch {}
+}
+function savedProject() {
+  try { return localStorage.getItem(projectKey); } catch { return null; }
+}
+
+async function requestData(path, options) {
+  const response = await fetch(path, { cache: "no-store", ...options });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    const error = new Error(data?.message ?? "无法读取团队记录，请刷新重试。");
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+const post = (path, data) => requestData(path, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+});
+
+function renderProjects() {
+  $("project-select").replaceChildren(...projects.map(({ id, title }) => {
+    const option = element("option", id === "demo" ? title + "（示例）" : title);
+    option.value = id;
+    return option;
+  }));
+  $("project-select").value = activeProject;
+  const title = projects.find(({ id }) => id === activeProject)?.title ?? "";
+  $("project-title").textContent = title;
+  document.title = title ? title + " · 团队审核" : "团队镜头审核";
+}
+
+function applySnapshot(data, project) {
+  const switching = activeProject !== project || !ready;
+  const { clip, offset } = previewInfo();
+  if (switching) drafts.clear();
+  const preferredShot = switching ? (project === "demo" ? "03" : null) : state.openShot;
+  activeProject = project;
+  clips = data.state.clips;
+  const openShot = clips.some(({ id }) => id === preferredShot) ? preferredShot : (clips[0]?.id ?? null);
+  state = { ...data.state, openShot };
   revision = data.revision;
   role = data.role;
   ready = true;
   const labels = { owner: "所有者", reviewer: "审核员", viewer: "只读成员" };
   $("storage").textContent = "团队共享 · " + labels[role];
-  $("upload-label").hidden = role === "viewer";
+  $("new-project").hidden = role === "viewer";
   $("open-members").hidden = role !== "owner";
+  $("export-review").disabled = false;
+  renderProjects();
   renderReview();
-  if (!playing) seekTo(position);
+  renderTimeline();
+  const sameClip = !switching && clip && clips.find(({ id }) => id === clip.id);
+  seekTo(sameClip ? clipStart(sameClip.id) + Math.min(offset, Math.max(0, sameClip.duration - 0.01)) : 0);
 }
-async function commit(action, form) {
+
+async function refreshWorkspace(project) {
+  const listing = await requestData("/api/projects");
+  const requested = project ?? (ready ? activeProject : savedProject());
+  const target = listing.projects.some(({ id }) => id === requested) ? requested : "demo";
+  const data = await requestData(scopedPath("/api/state", target));
+  projects = listing.projects;
+  applySnapshot(data, target);
+  rememberProject(target);
+}
+
+async function commit(action, form, path = "/api/review", onError = notice) {
   if (busy || !ready || role === "viewer") return false;
   busy = true;
+  $("project-select").disabled = true;
   try {
-    const response = await fetch(form ? "/api/upload" : "/api/review", {
-      method: "POST",
-      ...(form ? { body: form } : {
-        body: JSON.stringify({ ...action, revision }),
-        headers: { "Content-Type": "application/json" },
-      }),
-    });
-    const data = await response.json();
-    if (response.status === 409) {
-      await refreshWorkspace();
-      notice("其他成员更新了记录。已载入最新版本，请重新确认本次操作。", true);
-      return false;
-    }
-    if (!response.ok) throw new Error(data.message);
-    state = { ...data.state, openShot: state.openShot };
-    revision = data.revision;
+    if (form) form.set("revision", String(revision));
+    const data = form
+      ? await requestData(scopedPath("/api/upload"), { method: "POST", body: form })
+      : await post(scopedPath(path), { ...action, revision });
+    applySnapshot(data, activeProject);
     return true;
   } catch (error) {
-    notice(error.message || "保存失败，请重试。", true);
+    if (error.status === 409) {
+      try {
+        await refreshWorkspace(activeProject);
+        onError("其他成员已更新记录。已载入最新版本，请重新确认本次操作。", true);
+      } catch (refreshError) {
+        onError(refreshError.message, true);
+      }
+    } else {
+      onError(error.message || "保存失败，请重试。", true);
+    }
     return false;
   } finally {
     busy = false;
+    $("project-select").disabled = false;
   }
 }
+
 function clipSource(version) {
-  if (!version.blob) return version.file;
-  if (!urls.has(version.id)) urls.set(version.id, URL.createObjectURL(version.blob));
-  return urls.get(version.id);
+  return version.file;
 }
 function media(version, controls = false) {
   const node = element(version.type === "video" ? "video" : "img");
@@ -98,7 +149,7 @@ function selectedVersion(shot) {
 }
 
 function selectShot(id) {
-  if (!ready || id === state.openShot) return;
+  if (!ready || busy || id === state.openShot) return;
   state.openShot = id;
   notice("");
   renderReview();
@@ -171,28 +222,118 @@ async function pickVersion(version, input) {
   }
 }
 function renderReview() {
-  $("shots").replaceChildren(...clips.map((clip) => {
+  $("shots").replaceChildren(...clips.map((clip, index) => {
     const node = button("", () => selectShot(clip.id), "shot-tab");
     const label = element("span");
-    label.append(element("strong", clip.id), document.createTextNode(clip.title));
+    label.append(element("strong", shotNumber(index)), document.createTextNode(clip.title));
     label.append(element("small", selectedVersion(clip.id) ? "已有选用版本" : "待选择版本"));
     node.append(label);
     node.setAttribute("aria-current", String(clip.id === state.openShot));
     return node;
   }));
-  const current = clips.find((clip) => clip.id === state.openShot);
-  $("shot-number").textContent = "镜头 " + current.id;
-  $("shot-title").textContent = current.title;
-  $("shot-context").textContent = current.context;
-  $("versions").replaceChildren(...state.versions.filter((version) => version.shot === current.id).map(versionCard));
-  const actions = { review: "审核", pick: "选用", import: "导入" };
+  const current = currentShot();
+  const index = clips.indexOf(current);
+  const canWrite = ready && role !== "viewer";
+  $("shot-count").textContent = String(clips.length);
+  $("add-shot").hidden = !canWrite;
+  $("upload-label").hidden = !canWrite || !current;
+  $("shot-actions").hidden = !canWrite || !current;
+  $("move-up").disabled = index <= 0;
+  $("move-down").disabled = index < 0 || index >= clips.length - 1;
+  $("shot-number").textContent = current ? "镜头 " + shotNumber(index) + " · " + current.duration + " 秒" : "";
+  $("shot-title").textContent = current?.title ?? (ready ? "这个项目还没有镜头" : "正在打开项目…");
+  $("shot-context").textContent = current?.context ?? (canWrite ? "点击「新增镜头」填写分镜，再导入该镜头的图片或视频。" : "");
+  const versions = state.versions.filter((version) => version.shot === current?.id);
+  $("versions").replaceChildren(...versions.map(versionCard));
+  if (current && versions.length === 0) {
+    $("versions").append(element("p", "此镜头还没有导入版本。", "context"));
+  }
+  const actions = {
+    review: "审核", pick: "选用", import: "导入",
+    createProject: "新建项目", addShot: "新增镜头", editShot: "编辑镜头", moveShot: "调整镜头顺序",
+  };
   $("team-activity").replaceChildren(...state.activity.slice(0, 10).map((entry) => {
-    const title = state.versions.find((version) => version.id === entry.version)?.title;
-    return element("li", new Date(entry.at).toLocaleString() + " · " + entry.actor
-      + " · " + actions[entry.action] + "镜头 " + entry.shot + " · " + title);
+    const version = state.versions.find(({ id }) => id === entry.version);
+    const clip = clips.find(({ id }) => id === entry.shot);
+    return element("li", [new Date(entry.at).toLocaleString(), entry.actor, actions[entry.action],
+      clip?.title ?? entry.title, version?.title].filter(Boolean).join(" · "));
   }));
   $("activity-panel").hidden = !state.activity.length;
 }
+
+function editorError(message = "") {
+  $("editor-error").textContent = message;
+  $("editor-error").hidden = !message;
+}
+
+let editor;
+function openEditor(kind, clip) {
+  if (!ready || busy || role === "viewer") return;
+  editor = { kind, shot: clip?.id };
+  const projectForm = kind === "project";
+  $("editor-heading").textContent = { project: "新建项目", add: "新增镜头", edit: "编辑镜头" }[kind];
+  $("editor-title-label").textContent = projectForm ? "片名" : "镜头标题";
+  $("editor-title").value = clip?.title ?? "";
+  $("editor-context").value = clip?.context ?? "";
+  $("editor-duration").value = clip?.duration ?? 4;
+  $("editor-duration").required = !projectForm;
+  $("editor-shot-fields").hidden = projectForm;
+  editorError();
+  $("editor-dialog").showModal();
+  $("editor-title").focus();
+}
+
+$("new-project").onclick = () => openEditor("project");
+$("add-shot").onclick = () => openEditor("add");
+$("edit-shot").onclick = () => openEditor("edit", currentShot());
+$("editor-cancel").onclick = () => { if (!busy) $("editor-dialog").close(); };
+$("editor-dialog").addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
+
+async function makeProject(title) {
+  busy = true;
+  $("project-select").disabled = true;
+  try {
+    const data = await post("/api/projects", { title });
+    projects = [projects[0], data.project, ...projects.slice(1)];
+    applySnapshot(data, data.project.id);
+    rememberProject(activeProject);
+    return true;
+  } catch (error) {
+    editorError(error.message);
+    return false;
+  } finally {
+    busy = false;
+    $("project-select").disabled = false;
+  }
+}
+$("editor-form").onsubmit = async (event) => {
+  event.preventDefault();
+  if (busy) return;
+  editorError();
+  $("editor-save").disabled = true;
+  const { kind, shot } = editor;
+  const title = $("editor-title").value;
+  const saved = kind === "project"
+    ? await makeProject(title)
+    : await commit({
+      kind, shot, title, context: $("editor-context").value, duration: $("editor-duration").valueAsNumber,
+    }, null, "/api/shots", editorError);
+  $("editor-save").disabled = false;
+  if (!saved) return;
+  $("editor-dialog").close();
+  if (kind === "add") selectShot(clips.at(-1).id);
+  notice({ project: "已创建空白项目。", add: "已新增镜头。", edit: "已保存镜头设置并更新预览。" }[kind]);
+};
+async function moveShot(direction, control) {
+  if (!currentShot()) return;
+  if (await commit({ kind: "move", shot: state.openShot, direction }, null, "/api/shots")) {
+    notice("镜头顺序和预览已更新。");
+    (control.disabled ? $("edit-shot") : control).focus();
+  }
+}
+$("move-up").onclick = () => moveShot(-1, $("move-up"));
+$("move-down").onclick = () => moveShot(1, $("move-down"));
+
 
 function validateAsset(file, type) {
   const src = URL.createObjectURL(file);
@@ -221,7 +362,13 @@ $("upload").addEventListener("change", async (event) => {
   const file = input.files[0];
   input.value = "";
   if (!file) return;
+  if (!ready || busy || !state.openShot) return;
   const shot = state.openShot;
+  const project = activeProject;
+  if (file.size > 50 * 1024 * 1024) {
+    notice("文件最大为 50 MB。", true);
+    return;
+  }
   const type = file.type === "video/mp4" || (!file.type && /\.mp4$/i.test(file.name)) ? "video" : "image";
   if (type === "image" && !["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
     notice("请选择 PNG、JPEG、WebP 图片或 MP4 视频。", true);
@@ -230,12 +377,20 @@ $("upload").addEventListener("change", async (event) => {
   try {
     notice("正在检查素材…");
     await validateAsset(file, type);
+    if (project !== activeProject || shot !== state.openShot) {
+      notice("导入已取消。请在目标镜头中重新选择文件。", true);
+      return;
+    }
+    if (busy) {
+      notice("正在保存其他操作。请稍后重新导入。", true);
+      return;
+    }
     const form = new FormData();
     form.append("shot", shot);
-    form.append("file", file, file.name);
+    form.append("file", !file.type && type === "video" ? new File([file], file.name, { type: "video/mp4" }) : file, file.name);
     if (await commit(null, form)) {
       renderReview();
-      notice("已导入镜头 " + shot + " 的新版本，状态为待审。");
+      notice("已导入「" + currentShot()?.title + "」的新版本，状态为待审。");
     }
   } catch (error) {
     notice(error.message, true);
@@ -243,11 +398,7 @@ $("upload").addEventListener("change", async (event) => {
 });
 
 let total = 0;
-const starts = clips.map(({ duration }) => {
-  const start = total;
-  total += duration;
-  return start;
-});
+let starts = [];
 const clipStart = (id) => starts[clips.findIndex((clip) => clip.id === id)];
 const video = $("preview-video");
 let position = 0;
@@ -257,12 +408,15 @@ let run = 0;
 let timer;
 let stillStartedAt;
 let stillStartPosition;
-const clock = (seconds) => "00:" + String(Math.floor(seconds)).padStart(2, "0");
+let holding = false;
+const clock = (seconds) => [
+  Math.floor(seconds / 60), Math.floor(seconds % 60),
+].map((part) => String(part).padStart(2, "0")).join(":");
 
 function previewInfo() {
   const index = starts.findLastIndex((start) => position >= start);
   const clip = clips[index];
-  return { clip, offset: position - starts[index], version: selectedVersion(clip.id) };
+  return { clip, offset: clip ? position - starts[index] : 0, version: clip && selectedVersion(clip.id) };
 }
 function playerMessage(message = "") {
   $("player-message").textContent = message;
@@ -275,15 +429,18 @@ function updatePlayer() {
   $("play").textContent = playing ? "Ⅱ 暂停" : "▶ 播放";
   $("sound").textContent = video.muted ? "静音" : "有声";
   $("sound").setAttribute("aria-pressed", String(!video.muted));
-  const label = version ? clip.id + " · " + version.title : clip.id + " · 暂无选用版本";
+  $("play").disabled = !$("timeline").children.length;
+  $("seek").disabled = !total;
+  $("sound").disabled = !total;
+  const label = clip ? shotNumber(clips.indexOf(clip)) + " · " + (version?.title ?? "暂无选用版本") : "";
   if ($("preview-status").textContent !== label) $("preview-status").textContent = label;
   for (const node of $("timeline").children) {
-    node.setAttribute("aria-current", String(node.dataset.shot === clip.id));
+    node.setAttribute("aria-current", String(node.dataset.shot === clip?.id));
   }
 }
 function showPreview() {
   const { clip, version } = previewInfo();
-  const key = clip.id + "/" + (version?.id ?? "");
+  const key = [activeProject, clip?.id, version?.id].join("/");
   if (key !== displayed) {
     displayed = key;
     video.pause();
@@ -292,6 +449,13 @@ function showPreview() {
     image.hidden = version?.type !== "image";
     video.hidden = version?.type !== "video";
     $("preview-empty").hidden = Boolean(version);
+    $("preview-empty").textContent = clip ? "此镜头还没有选用版本" : "新增镜头后，预览将在这里显示";
+    if (image.hidden) image.removeAttribute("src");
+    if (video.hidden && video.hasAttribute("src")) {
+      video.removeAttribute("src");
+      video.removeAttribute("poster");
+      video.load();
+    }
     if (!image.hidden) {
       image.alt = version.title;
       image.src = clipSource(version);
@@ -307,6 +471,7 @@ function showPreview() {
 }
 function seekVideo(offset) {
   const apply = () => {
+    if (!Number.isFinite(video.duration)) return;
     video.currentTime = Math.min(offset, video.duration);
   };
   if (video.readyState >= 1) apply();
@@ -329,6 +494,9 @@ function seekTo(seconds) {
 function playVideo(attempt) {
   playerMessage("视频正在加载…");
   seekVideo(previewInfo().offset);
+  if (video.readyState >= 1 && previewInfo().offset >= video.duration) {
+    return holdFrame(previewInfo().offset);
+  }
   const start = () => video.play();
   start().catch((error) => {
     if (attempt !== run || error.name === "AbortError") return;
@@ -342,7 +510,14 @@ function playVideo(attempt) {
     playerMessage("浏览器未能开始播放。请点击播放重试。");
   });
 }
+function holdFrame(offset) {
+  holding = true;
+  stillStartedAt = performance.now();
+  stillStartPosition = clipStart(previewInfo().clip.id) + offset;
+  playerMessage();
+}
 function beginClip() {
+  holding = false;
   stillStartedAt = performance.now();
   stillStartPosition = position;
   if (!video.hidden) playVideo(run);
@@ -353,10 +528,13 @@ function tick() {
   const { clip } = previewInfo();
   const start = clipStart(clip.id);
   const end = start + clip.duration;
-  if (video.hidden) {
+  if (!video.hidden && !holding && video.ended) {
+    holdFrame(Math.max(position - start, video.currentTime));
+  }
+  if (video.hidden || holding) {
     position = Math.min(end, stillStartPosition + (performance.now() - stillStartedAt) / 1000);
   } else {
-    position = video.ended ? end : Math.min(end, start + video.currentTime);
+    position = Math.min(end, start + video.currentTime);
     if (video.currentTime > 0 && video.readyState >= 3) playerMessage();
   }
   if (position >= total) {
@@ -380,6 +558,7 @@ video.addEventListener("playing", () => {
   if (playing && !video.hidden) playerMessage();
 });
 $("play").onclick = () => {
+  if (!total) return;
   if (playing) {
     stopPlayback();
     playerMessage();
@@ -401,11 +580,13 @@ $("seek").max = total;
 $("seek").oninput = (event) => seekTo(Number(event.target.value));
 $("export-review").onclick = () => {
   const report = {
-    project: "下一班车",
+    project: projects.find(({ id }) => id === activeProject)?.title,
+    projectId: activeProject,
+    revision,
     exportedAt: new Date().toISOString(),
     activity: state.activity,
-    shots: clips.map(({ id, title, duration }) => ({
-      id, title, duration, selectedVersion: state.selected[id] ?? null,
+    shots: clips.map(({ id, title, duration, context }, index) => ({
+      id, title, duration, context, start: starts[index], selectedVersion: state.selected[id] ?? null,
       versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy }) => ({
         id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null, reviewedBy: reviewedBy ?? null,
       })),
@@ -413,32 +594,48 @@ $("export-review").onclick = () => {
   };
   const link = element("a");
   link.href = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
-  link.download = "next-bus-review.json";
+  link.download = (report.project ?? "review").replace(/[<>:"/\\|?*]/g, "_") + "-review.json";
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 };
-$("timeline").replaceChildren(...clips.map((clip, index) => {
-  const node = button("", () => seekTo(starts[index]));
-  node.dataset.shot = clip.id;
-  node.setAttribute("aria-label", "跳到镜头 " + clip.id);
-  node.append(element("span", clip.id), element("small", clock(starts[index])));
-  return node;
-}));
+function renderTimeline() {
+  total = 0;
+  starts = clips.map(({ duration }) => {
+    const start = total;
+    total += duration;
+    return start;
+  });
+  $("seek").max = total;
+  $("timeline").replaceChildren(...clips.map((clip, index) => {
+    const node = button("", () => seekTo(starts[index]));
+    node.dataset.shot = clip.id;
+    node.setAttribute("aria-label", "跳到镜头 " + shotNumber(index) + " " + clip.title);
+    node.append(element("span", shotNumber(index)), element("small", clock(starts[index])));
+    return node;
+  }));
+}
 
-$("refresh-team").onclick = async () => {
+async function openProject(project) {
   if (busy) return;
   busy = true;
+  $("project-select").disabled = true;
+  stopPlayback();
   try {
-    stopPlayback();
-    await refreshWorkspace();
-    notice("已载入最新团队记录。");
+    await refreshWorkspace(project);
+    notice(project ? "" : "已载入最新团队记录。");
   } catch (error) {
     notice(error.message, true);
+    $("project-select").value = activeProject;
   } finally {
     busy = false;
+    $("project-select").disabled = !ready;
   }
-};
-$("refresh-team").click();
+}
+$("project-select").onchange = (event) => openProject(event.target.value);
+$("refresh-team").onclick = () => openProject();
+renderReview();
+showPreview();
+openProject();
 
 let managingMembers = false;
 const memberRoles = { reviewer: "审核员", viewer: "只读成员" };

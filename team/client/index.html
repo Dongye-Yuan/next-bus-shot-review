@@ -4,23 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101517">
-  <title>下一班车 · 团队审核</title>
+  <title>团队镜头审核</title>
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.js"></script>
 </head>
 <body>
   <header class="masthead">
-    <div class="brand"><span class="brand-icon" aria-hidden="true">▥</span><div><span class="project">《下一班车》</span><h1>团队审核</h1></div></div>
-    <div class="header-actions"><span id="storage" class="storage" role="status">正在打开审核记录…</span><button id="open-members" type="button" hidden>邀请成员</button><button id="refresh-team" type="button">刷新团队记录</button><button id="export-review" type="button">导出审核记录</button></div>
+    <div class="brand"><span class="brand-icon" aria-hidden="true">▥</span><div><span class="project" id="project-title"></span><h1>团队审核</h1></div></div>
+    <div class="header-actions"><span id="storage" class="storage" role="status">正在打开审核记录…</span><button id="open-members" type="button" hidden>邀请成员</button><button id="refresh-team" type="button">刷新团队记录</button><button id="export-review" type="button" disabled>导出审核记录</button></div>
   </header>
+  <section class="project-bar" aria-label="项目">
+    <label for="project-select">当前项目</label>
+    <select id="project-select" disabled></select>
+    <button id="new-project" type="button" hidden>＋ 新建项目</button>
+  </section>
   <main class="layout">
     <nav class="rail" aria-label="镜头列表">
-      <h2>镜头 <span>01–04</span></h2>
+      <div class="section-head"><h2>镜头 <span id="shot-count"></span></h2><button id="add-shot" type="button" hidden>＋ 新增镜头</button></div>
       <div id="shots"></div>
     </nav>
     <section class="review" aria-labelledby="shot-title">
       <div class="section-head">
         <div><p class="eyebrow" id="shot-number"></p><h2 id="shot-title"></h2></div>
+        <div class="shot-actions" id="shot-actions" hidden>
+          <button id="edit-shot" type="button">编辑镜头</button>
+          <button id="move-up" type="button">上移</button>
+          <button id="move-down" type="button">下移</button>
+        </div>
         <label id="upload-label" class="button upload" for="upload" hidden>＋ 导入版本</label>
         <input id="upload" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,.mp4" hidden>
       </div>
@@ -43,13 +53,31 @@
       <div class="player-controls">
         <button id="play" type="button">▶ 播放</button>
         <button id="sound" type="button" aria-pressed="false">静音</button>
-        <input id="seek" type="range" min="0" max="17" step="0.01" value="0" aria-label="预览进度">
-        <output id="clock" for="seek">00:00 / 00:17</output>
+        <input id="seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="预览进度">
+        <output id="clock" for="seek">00:00 / 00:00</output>
       </div>
       <div id="timeline" class="timeline" aria-label="预览镜头"></div>
       <p id="preview-status" class="preview-status" aria-live="polite"></p>
     </aside>
   </main>
+  <dialog id="editor-dialog" aria-labelledby="editor-heading">
+    <form id="editor-form">
+      <h2 id="editor-heading"></h2>
+      <label id="editor-title-label" for="editor-title">标题</label>
+      <input id="editor-title" maxlength="100" required>
+      <div id="editor-shot-fields">
+        <label for="editor-context">描述</label>
+        <textarea id="editor-context" maxlength="2000" rows="4"></textarea>
+        <label for="editor-duration">预览时长（秒）</label>
+        <input id="editor-duration" type="number" min="1" max="300" step="1">
+      </div>
+      <p id="editor-error" class="notice error" role="alert" hidden></p>
+      <div class="actions">
+        <button id="editor-cancel" type="button">取消</button>
+        <button id="editor-save" class="pick" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="members-dialog" aria-labelledby="members-title">
     <div class="section-head"><h2 id="members-title">邀请与管理成员</h2>
       <form method="dialog"><button type="submit">关闭</button></form>
@@ -60,7 +88,7 @@
       <label>角色<select id="member-role"><option value="reviewer">审核员</option><option value="viewer">只读成员</option></select></label>
       <button id="save-member" type="submit">保存成员角色</button>
     </form>
-    <p class="context">审核员可导入、审核和选版。只读成员可查看和播放。</p>
+    <p class="context">审核员可在工作区内创建项目、管理镜头、导入、审核和选版。只读成员可查看和播放。成员角色适用于全部项目。</p>
     <p id="member-message" class="notice" role="status" hidden></p>
     <div id="member-list" class="member-list"></div>
     <button id="copy-invite" type="button">复制邀请说明</button>
