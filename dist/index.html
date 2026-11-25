@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101517">
+  <title>下一班车 · 镜头审核</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand"><span class="brand-icon" aria-hidden="true">▥</span><div><span class="project">《下一班车》</span><h1>镜头审核</h1></div></div>
+    <span id="storage" class="storage" role="status">正在打开审核记录…</span>
+  </header>
+  <main class="layout">
+    <nav class="rail" aria-label="镜头列表">
+      <h2>镜头 <span>01–04</span></h2>
+      <div id="shots"></div>
+    </nav>
+    <section class="review" aria-labelledby="shot-title">
+      <div class="section-head">
+        <div><p class="eyebrow" id="shot-number"></p><h2 id="shot-title"></h2></div>
+        <label class="button upload" for="upload">＋ 导入版本</label>
+        <input id="upload" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,.mp4" hidden>
+      </div>
+      <p id="shot-context" class="context"></p>
+      <p id="notice" class="notice" role="status" hidden></p>
+      <div id="versions" class="versions"></div>
+    </section>
+    <aside class="preview" aria-labelledby="preview-title">
+      <div class="section-head"><h2 id="preview-title">竖屏预览</h2><span class="format">9:16</span></div>
+      <div id="screen" class="screen"></div>
+      <div class="player-controls">
+        <button id="play" type="button">▶ 播放</button>
+        <input id="seek" type="range" min="0" max="17" step="0.01" value="0" aria-label="预览进度">
+        <output id="clock" for="seek">00:00 / 00:17</output>
+      </div>
+      <div id="timeline" class="timeline" aria-label="预览镜头"></div>
+      <p id="preview-status" class="preview-status" aria-live="polite"></p>
+    </aside>
+  </main>
+</body>
+</html>
