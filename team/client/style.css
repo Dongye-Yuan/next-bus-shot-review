@@ -227,3 +227,10 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
   display: block; width: 100%; min-height: 33px; padding: 4px 8px; font: inherit;
   color: var(--ink); background: #192224; border: 1px solid var(--line); border-radius: 6px;
 }
+
+.external-prompt { display: grid; gap: 8px; }
+.external-prompt .context { margin: 0; }
+.external-prompt textarea { width: 100%; }
+.shot-prompt-assets { margin: 0; padding-left: 20px; display: grid; gap: 5px; }
+.shot-prompt-assets a { color: var(--gold); }
+.shot-prompt-assets small { color: var(--muted); margin-inline-start: 8px; }

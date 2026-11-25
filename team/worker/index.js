@@ -242,6 +242,7 @@ async function upload(request, env, current, user) {
     return fail("请选择有效的图片或 MP4。", 400);
   }
   if (file.size > sizeLimit) return fail("文件最大为 50 MB。", 413);
+  const external = form.get("externalGeneration") === "1";
   const from = form.get("replaces");
   const prior = from && versionById(current, from);
   const keyframe = form.get("keyframe");
@@ -249,12 +250,14 @@ async function upload(request, env, current, user) {
   if (from && (prior?.shot !== shot || prior.status !== "rejected" || prior.type !== mediaTypes.get(file.type))) {
     return fail("返工版本必须与已退回版本属于同一镜头和素材类型。", 400);
   }
-  if (keyframe && (frame?.shot !== shot || frame.type !== "image" || frame.status !== "approved")) {
+  if ((keyframe || (external && !from && file.type === "video/mp4")) && (frame?.shot !== shot || frame.type !== "image" || frame.status !== "approved")) {
     return fail("请选择该镜头已通过的关键帧。", 400);
   }
   const id = crypto.randomUUID();
   const version = {
-    id, shot, ...(from ? { replaces: from, references: production(current.state).shots[shot]?.references ?? [] } : {}),
+    id, shot, ...(from ? { replaces: from } : {}),
+    ...(external ? { generationSource: "external" } : {}),
+    ...(from || external ? { references: production(current.state).shots[shot]?.references ?? [] } : {}),
     ...(keyframe ? { keyframe } : {}), title: file.name.slice(0, 240), type: mediaTypes.get(file.type),
     status: "pending", note: "", file: mediaPath(current.project, id),
     importedAt: new Date().toISOString(), importedBy: user.email,
@@ -687,9 +690,9 @@ export default {
       const user = await identity(request, env);
       if (!user) return fail("此团队工作区仅供已授权的成员访问。", 403);
       const { pathname } = url;
-      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/production.js", "/board-data.js", "/storyboard.js", "/style.css"].includes(pathname)) {
+      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/production.js", "/shot-prompt.js", "/board-data.js", "/storyboard.js", "/style.css"].includes(pathname)) {
         const key = pathname === "/" ? "index.html" : pathname.slice(1);
-        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "production.js": "text/javascript", "board-data.js": "text/javascript", "storyboard.js": "text/javascript", "style.css": "text/css" }[key];
+        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "production.js": "text/javascript", "shot-prompt.js": "text/javascript", "board-data.js": "text/javascript", "storyboard.js": "text/javascript", "style.css": "text/css" }[key];
         return new Response(assets[key], { headers: { ...headers, "Content-Type": type + "; charset=utf-8" } });
       }
       if (pathname === "/api/members") return await members(request, env, user, url);

@@ -1,4 +1,4 @@
-const angles = { front: "正面", side: "侧面", full: "全身" };
+import { angles, shotPrompt } from "./shot-prompt.js";
 const features = ["脸型", "发型", "标志性特征", "服装", "其他"];
 const imageTypes = "image/jpeg,image/png,image/webp";
 const demoPath = "https://next-bus-shot-review.riferice4.chatgpt.site/media/";
@@ -209,14 +209,15 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     content.append(form);
   }
 
-  function attachment(from, shot, frame, reuse) {
-    open("导入外部返工版本");
+  function attachment({ from, shot, type, frame, reuse }) {
+    open(from?.type === type ? "导入外部返工版本" : "导入外部生成版本");
+    const video = type === "video";
     const form = element("form", "", "production-form");
-    const [label, input] = field(from.type === "video" ? "新版 MP4" : "新版图片", "input", {
-      type: "file", required: true, accept: from.type === "video" ? "video/mp4,.mp4" : imageTypes,
+    const [label, input] = field(video ? "新版 MP4" : "新版图片", "input", {
+      type: "file", required: true, accept: video ? "video/mp4,.mp4" : imageTypes,
     });
-    const origin = from.type === "video" && frame
-      ? element("p", (reuse ? "沿用关键帧 · " : "更新后关键帧 · ") + frame.title, "context") : null;
+    const origin = video && frame
+      ? element("p", (from ? (reuse ? "沿用关键帧 · " : "更新后关键帧 · ") : "生成用关键帧 · ") + frame.title, "context") : null;
     if (origin) form.append(origin);
     const save = element("button", "导入为待审", "pick");
     save.type = "submit";
@@ -229,13 +230,14 @@ export function setupProduction({ $, element, button, context, commit, checkFile
       save.disabled = true;
       try {
         if (!chosen || chosen.size > 50 * 1024 * 1024) throw new Error("素材最大 50 MB。");
-        await checkFile(chosen, from.type);
-        const file = from.type === "video" && !chosen.type
+        await checkFile(chosen, type);
+        const file = video && !chosen.type
           ? new File([chosen], chosen.name, { type: "video/mp4" }) : chosen;
         upload.set("file", file);
         upload.set("shot", shot.id);
-        upload.set("replaces", from.id);
-        if (from.type === "video" && frame) upload.set("keyframe", frame.id);
+        upload.set("externalGeneration", "1");
+        if (from?.type === type) upload.set("replaces", from.id);
+        if (video && frame) upload.set("keyframe", frame.id);
         await run(null, upload, "/api/upload", () => dialog.close());
       } catch (error) {
         message(error.message, true);
@@ -243,14 +245,70 @@ export function setupProduction({ $, element, button, context, commit, checkFile
         save.disabled = false;
       }
     };
-    content.append(element("p", "原版 · " + from.title + " · " + from.note, "context"), form);
+    if (from) content.append(element("p", "原版 · " + from.title + " · " + from.note, "context"));
+    content.append(form);
+  }
+
+  function externalPrompt({ shot, type, from, frame, references, reuse, instruction, videoReady }) {
+    const box = element("section", "", "production-card external-prompt");
+    const title = element("h3", "在外部工具生成");
+    const tools = element("div", "", "actions");
+    const [promptLabel, preview] = field("完整提示词", "textarea", { readOnly: true, rows: 10 });
+    promptLabel.hidden = true;
+    const copy = button("复制" + (type === "image" ? "关键帧" : "视频") + "提示词", async () => {
+      try {
+        const { text } = shotPrompt({ shot, type, from, frame, references, directive: instruction.value });
+        preview.value = text;
+        promptLabel.hidden = false;
+        try {
+          await navigator.clipboard.writeText(text);
+          message("提示词已复制。按下方清单上传素材，生成后可导回当前镜头。");
+        } catch {
+          preview.focus();
+          preview.select();
+          message("提示词已选中，可手动复制。");
+        }
+      } catch (error) {
+        message(error.message, true);
+      }
+    }, "pick");
+    const importButton = button(from?.type === type ? "导入外部返工版本" : "导入外部生成版本",
+      () => attachment({ from, shot, type, frame, reuse }));
+    copy.disabled = !videoReady;
+    importButton.disabled = !videoReady && (!from || !reuse || from.type !== type);
+    tools.append(copy, importButton);
+    box.append(title, tools);
+    if (!videoReady) {
+      box.append(element("p", "确认选定的关键帧后，即可复制视频提示词。", "context"));
+    } else {
+      const { assets } = shotPrompt({ shot, type, from, frame, references });
+      if (assets.length) {
+        const list = element("ul", "", "shot-prompt-assets");
+        for (const { file, label, optional } of assets) {
+          const item = element("li");
+          const link = element("a", label);
+          link.href = file;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          item.append(link);
+          if (optional) item.append(element("small", "支持角色参考时附加"));
+          list.append(item);
+        }
+        box.append(element("p", "要上传的素材（按顺序）", "context"), list);
+      }
+    }
+    box.append(promptLabel);
+    return box;
   }
 
   function preparation(shot, type, from, reuse = true) {
     open(from ? "镜头返工" : type === "image" ? "生成关键帧" : "生成视频");
-    const refs = bindings(shot.id);
+    const references = bindings(shot.id).map(({ reference, angle }) => ({ ref: findRef(reference), angle }))
+      .filter(({ ref }) => ref?.confirmedAt);
     const currentFrame = config().shots[shot.id]?.keyframe;
-    const frame = findVersion(reuse ? (from?.keyframe ?? currentFrame) : currentFrame);
+    const selected = findVersion(reuse ? (from?.keyframe ?? currentFrame) : currentFrame);
+    const frame = selected?.status === "approved" && selected.type === "image" && selected.shot === shot.id ? selected : null;
+    const videoReady = type !== "video" || Boolean(frame && (reuse || frame.id !== from?.keyframe));
     if (from) content.append(element("p", "退回原因 · " + from.note, "context"));
     if (type === "video" && from) {
       const modes = element("div", "", "actions");
@@ -265,29 +323,27 @@ export function setupProduction({ $, element, button, context, commit, checkFile
           button("生成修改后的关键帧", () => preparation(shot, "image", from)));
       }
     }
-    if (type === "video") content.append(element("p", "将使用关键帧 · " + (frame?.status === "approved" ? frame.title : "暂未确认"), "context"));
+    if (type === "video") content.append(element("p", "将使用关键帧 · " + (videoReady ? frame.title : "暂未确认"), "context"));
+    if (!references.length) content.append(element("p", "已绑定的角色参考会随提示词列出。有人物入镜时，请先绑定角色参考。", "context"));
     const form = element("form", "", "production-form");
-    const [label, prompt] = field("生成或返工提示", "textarea", { rows: 4, maxLength: 1400, required: true,
+    const [label, prompt] = field("生成或返工提示", "textarea", { rows: 4, maxLength: 1400,
       value: from?.note || shot.context });
-    const canGenerate = context().capabilities.generation && refs.length && (type !== "video" || frame?.status === "approved");
-    const submit = element("button", "提交生成", "pick");
-    submit.type = "submit";
-    submit.disabled = !canGenerate;
-    form.append(label, submit);
-    form.onsubmit = (event) => {
-      event.preventDefault();
-      run({ kind: "submit", type, shot: shot.id, from: from?.id, prompt: prompt.value, reuse },
-        null, "/api/generation", () => showJobs(shot));
-    };
-    if (!refs.length) content.append(element("p", "请先绑定已确认的角色，生成时会带上角色设定和参考图。", "context"));
-    if (!context().capabilities.generation) content.append(element("p", "生成服务待配置。可先在外部生成，再导入此返工单。", "context"));
-    else content.append(element("p", "提交会把此镜头的素材和提示发送给 fal，按你的服务账户计费。", "context"));
-    if (from && from.type === type) {
-      const importButton = button("导入外部返工版本", () => attachment(from, shot, frame?.status === "approved" ? frame : null, reuse));
-      importButton.disabled = type === "video" && !reuse && (!frame || frame.status !== "approved" || frame.id === from.keyframe);
-      content.append(importButton);
+    form.append(label);
+    if (context().capabilities.generation) {
+      const submit = element("button", "提交站内生成", "pick");
+      submit.type = "submit";
+      submit.disabled = !references.length || !videoReady;
+      prompt.required = true;
+      form.append(submit, element("p", "提交会把此镜头的素材和提示发送给 fal，按你的服务账户计费。", "context"));
+      form.onsubmit = (event) => {
+        event.preventDefault();
+        run({ kind: "submit", type, shot: shot.id, from: from?.id, prompt: prompt.value, reuse },
+          null, "/api/generation", () => showJobs(shot));
+      };
+    } else {
+      form.onsubmit = (event) => event.preventDefault();
     }
-    content.append(form);
+    content.append(form, externalPrompt({ shot, type, from, frame, references, reuse, instruction: prompt, videoReady }));
   }
 
   function showJobs(shot) {
