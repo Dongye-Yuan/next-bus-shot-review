@@ -297,3 +297,35 @@ test("locks references, preserves evidence and collects the queued repair as a s
   assert.equal(manual.state.versions.at(-1).replaces, "03-old");
   assert.equal(manual.state.versions.find(({ id }) => id === "03-old").status, "rejected");
 });
+
+test("saves story and draft separately and confirms ordered shots once", async (t) => {
+  const { db, send, post } = fixture();
+  t.after(() => db.close());
+  const { project } = await (await post("/api/projects", "owner", { title: "分镜验收" })).json();
+  const scope = (route) => route + "?project=" + project.id;
+  const board = (body, role = "owner") => post(scope("/api/storyboard"), role, body);
+  const story = "  雨夜，两个人在公交站等车。\n后来他们共伞。\n";
+  assert.equal((await board({ kind: "story", story, revision: 0 }, "viewer")).status, 403);
+  assert.equal((await board({ kind: "story", story, revision: 0 })).status, 200);
+  assert.equal((await board({ kind: "draft", rows: [{ number: "01" }], revision: 1 })).status, 200);
+  const row = { number: "01", characters: "许棠", scene: "雨夜站棚", framing: "右侧面",
+    action: "低头看伞", duration: "6秒", costume: "米白雨衣", dialogue: "" };
+  const rows = [{ ...row, number: "02", action: "两人共伞", duration: "5" }, row];
+  assert.equal((await board({ kind: "confirm", rows, revision: 1 })).status, 409);
+  assert.equal((await board({ kind: "confirm", rows: [row, row], revision: 2 })).status, 400);
+  const confirmed = await (await board({ kind: "confirm", rows, revision: 2 })).json();
+  assert.equal(confirmed.revision, 3);
+  assert.equal(confirmed.state.story.text, story);
+  assert.deepEqual(confirmed.state.clips.map(({ title, duration, storyboard }) => [title, duration, storyboard.number]),
+    [["两人共伞", 5, "02"], ["低头看伞", 6, "01"]]);
+  assert.match(confirmed.state.clips[1].context, /米白雨衣/);
+  assert.equal((await board({ kind: "confirm", rows, revision: 3 })).status, 409);
+  const edit = await (await post(scope("/api/shots"), "owner", {
+    kind: "edit", shot: confirmed.state.storyboard.shotIds[0], title: "共伞走向路口", duration: 7, context: "", revision: 3,
+  })).json();
+  assert.equal(edit.state.clips[0].storyboard.number, "02");
+  const readback = await (await send(scope("/api/state"), "viewer")).json();
+  assert.equal(readback.state.clips.length, 2);
+  assert.equal(readback.state.storyboard.rows[0].action, "两人共伞");
+  assert.equal((await (await send("/api/state", "viewer")).json()).state.clips.length, 4);
+});

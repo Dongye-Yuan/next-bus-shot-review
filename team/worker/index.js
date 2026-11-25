@@ -1,3 +1,5 @@
+import { normalizeBoard, clipFromBoardRow, storyLimit } from "../client/board-data.js";
+
 const demoClips = [
   { id: "01", title: "雨夜站棚", duration: 4, context: "双人中景，建立站棚与人物站位。" },
   { id: "02", title: "林澈近景", duration: 4, context: "核对林澈本人左眉尾的浅疤。" },
@@ -134,13 +136,50 @@ async function manageShots(request, env, current, user) {
         !Number.isInteger(duration) || duration < 1 || duration > 300) {
       return fail("请填写 1–100 字的标题、最多 2000 字的描述和 1–300 秒的整数时长。", 400);
     }
-    shot = { id: input.kind === "add" ? crypto.randomUUID() : clips[index].id, title, context, duration };
+    shot = { ...(input.kind === "add" ? { id: crypto.randomUUID() } : clips[index]), title, context, duration };
     if (input.kind === "add") clips.push(shot);
     else clips[index] = shot;
   }
   const events = { add: "addShot", edit: "editShot", move: "moveShot" };
   const status = await save(env, current, events[input.kind], user, { shot: shot.id, title: shot.title });
   return status === 200 ? snapshot(current, user) : saveError(status);
+}
+
+async function editStoryboard(request, env, current, user) {
+  const limit = 256 * 1024;
+  if (Number(request.headers.get("Content-Length")) > limit) return fail("故事或分镜表太大。", 413);
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > limit) return fail("故事或分镜表太大。", 413);
+  const input = JSON.parse(raw);
+  if (input?.revision !== current.revision) return saveError(409);
+  if (input.kind === "story") {
+    if (typeof input.story !== "string" || input.story.length > storyLimit) {
+      return fail("故事原文最多 " + storyLimit + " 个字符。", 400);
+    }
+    current.state.story = { text: input.story, updatedAt: new Date().toISOString(), updatedBy: user.email };
+    return saveProduction(env, current, user, "saveStory");
+  }
+  if (!["draft", "confirm"].includes(input.kind)) return fail("分镜操作无效。", 400);
+  if (current.state.storyboard?.confirmedAt) return fail("此项目的分镜已确认建镜，可在镜头列表继续编辑。", 409);
+  const confirm = input.kind === "confirm";
+  let rows;
+  try {
+    rows = normalizeBoard(input.rows, confirm);
+  } catch (error) {
+    return fail(error.message, 400);
+  }
+  const now = new Date().toISOString();
+  const board = { rows, updatedAt: now, updatedBy: user.email };
+  if (confirm) {
+    const newClips = rows.map((row) => clipFromBoardRow(row, crypto.randomUUID()));
+    current.state.clips.push(...newClips);
+    board.confirmedAt = now;
+    board.confirmedBy = user.email;
+    board.shotIds = newClips.map(({ id }) => id);
+  }
+  current.state.storyboard = board;
+  const event = confirm ? "confirmStoryboard" : "saveStoryboard";
+  return saveProduction(env, current, user, event, { title: rows.length + " 个镜头" });
 }
 
 const mediaPath = (project, id) => "/api/media/" + id + (project === demoProject.id ? "" : "?project=" + project);
@@ -630,18 +669,18 @@ export default {
       const user = await identity(request, env);
       if (!user) return fail("此团队工作区仅供已授权的成员访问。", 403);
       const { pathname } = url;
-      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/production.js", "/style.css"].includes(pathname)) {
+      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/production.js", "/board-data.js", "/storyboard.js", "/style.css"].includes(pathname)) {
         const key = pathname === "/" ? "index.html" : pathname.slice(1);
-        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "production.js": "text/javascript", "style.css": "text/css" }[key];
+        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "production.js": "text/javascript", "board-data.js": "text/javascript", "storyboard.js": "text/javascript", "style.css": "text/css" }[key];
         return new Response(assets[key], { headers: { ...headers, "Content-Type": type + "; charset=utf-8" } });
       }
       if (pathname === "/api/members") return await members(request, env, user, url);
       if (pathname === "/api/projects" && request.method === "GET") return await listProjects(env, user);
       if (request.method === "POST") {
         if (user.role === "viewer" || request.headers.get("Origin") !== url.origin) return fail("此账户没有修改权限。", 403);
-        if (["/api/projects", "/api/shots", "/api/review", "/api/production", "/api/generation", "/api/vision"].includes(pathname)) {
+        if (["/api/projects", "/api/shots", "/api/review", "/api/production", "/api/generation", "/api/vision", "/api/storyboard"].includes(pathname)) {
           if (!request.headers.get("Content-Type")?.startsWith("application/json")) return fail("请求格式无效。", 415);
-          if (pathname !== "/api/vision" && Number(request.headers.get("Content-Length")) > 16384) return fail("请求太大。", 413);
+          if (!["/api/vision", "/api/storyboard"].includes(pathname) && Number(request.headers.get("Content-Length")) > 16384) return fail("请求太大。", 413);
           if (pathname === "/api/projects") return await createProject(request, env, user);
         }
       }
@@ -659,6 +698,7 @@ export default {
         if (pathname === "/api/production") return await editProduction(request, env, current, user);
         if (pathname === "/api/generation") return await generation(request, env, current, user);
         if (pathname === "/api/vision") return await visionCheck(request, env, current, user);
+        if (pathname === "/api/storyboard") return await editStoryboard(request, env, current, user);
       }
       return fail("找不到此页面。", 404);
     } catch (error) {

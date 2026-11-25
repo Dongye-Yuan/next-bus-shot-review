@@ -1,5 +1,6 @@
 import { moviePlan, renderMovie } from "./movie.js";
 import { setupProduction } from "./production.js";
+import { setupStoryboard } from "./storyboard.js";
 
 let clips = [];
 let projects = [];
@@ -87,6 +88,7 @@ function applySnapshot(data, project) {
   $("open-members").hidden = role !== "owner";
   $("export-review").disabled = false;
   $("open-movie").disabled = false;
+  $("open-storyboard").hidden = false;
   renderProjects();
   renderReview();
   renderTimeline();
@@ -311,6 +313,7 @@ function renderReview() {
     createProject: "新建项目", addShot: "新增镜头", editShot: "编辑镜头", moveShot: "调整镜头顺序",
     addReference: "新增角色参考", confirmReference: "确认角色参考", bindReferences: "绑定角色参考",
     lockFrame: "确认关键帧", addIssue: "标记问题", checkConsistency: "AI 一致性检查",
+    saveStory: "保存故事原文", saveStoryboard: "保存分镜草稿", confirmStoryboard: "确认分镜并建镜",
     startGeneration: "发起生成", generationReceipt: "保存任务回执", generationProgress: "更新生成状态", generationComplete: "导入生成结果",
   };
   $("team-activity").replaceChildren(...state.activity.slice(0, 10).map((entry) => {
@@ -736,8 +739,8 @@ $("export-review").onclick = () => {
     revision,
     exportedAt: new Date().toISOString(),
     activity: state.activity,
-    shots: clips.map(({ id, title, duration, context }, index) => ({
-      id, title, duration, context, start: starts[index], selectedVersion: state.selected[id] ?? null,
+    shots: clips.map(({ id, title, duration, context, storyboard }, index) => ({
+      id, title, duration, context, storyboard, start: starts[index], selectedVersion: state.selected[id] ?? null,
       versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, issues, replaces, keyframe }) => ({
         id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null, reviewedBy: reviewedBy ?? null,
         checkedAt, checkedFrames, issues, replaces, keyframe,
@@ -787,6 +790,8 @@ $("project-select").onchange = (event) => openProject(event.target.value);
 $("refresh-team").onclick = () => openProject();
 const productionUI = setupProduction({ $, element, button, context: () => ({ state, role, capabilities }),
   commit, checkFile: validateAsset });
+setupStoryboard({ $, element, button, context: () => ({ state, role, clips }), commit,
+  jumpToShot: (id) => { selectShot(id); seekTo(clipStart(id)); $("shot-title").focus(); } });
 renderReview();
 showPreview();
 openProject();

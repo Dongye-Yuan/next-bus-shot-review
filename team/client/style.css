@@ -195,3 +195,24 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .issue-summary { margin-top: 6px; }
 .issue-summary button { width: 100%; text-align: left; white-space: normal; }
 .production-dialog [aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+
+.storyboard-dialog { width: min(1180px, calc(100% - 24px)); }
+.storyboard-tabs { margin: 12px 0; }
+.storyboard-tabs [aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+.storyboard-panel { display: grid; gap: 10px; margin-top: 12px; }
+.storyboard-panel label { display: block; color: var(--muted); margin-bottom: 5px; }
+#board-import .actions { margin-top: 5px; }
+.board-table-wrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+.board-table { width: 100%; border-collapse: collapse; text-align: left; }
+.board-table th, .board-table td { border-bottom: 1px solid var(--line); padding: 6px; vertical-align: top; }
+.board-table thead th { white-space: nowrap; color: var(--muted); font-size: 12px; }
+.board-table td { min-width: 110px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.board-table td:nth-child(2), .board-table td:nth-child(7) { min-width: 72px; }
+.board-table td:nth-child(6) { min-width: 195px; }
+.board-table input, .board-table textarea {
+  color: var(--ink); background: #192224; border: 1px solid var(--line); border-radius: 6px;
+  width: 100%; min-width: 45px; padding: 6px; font: inherit;
+}
+.board-table textarea { height: 66px; min-width: 120px; }
+.board-row-actions { display: grid; gap: 4px; }
+.board-row-actions button { padding: 3px 8px; min-height: 28px; font-size: 12px; }

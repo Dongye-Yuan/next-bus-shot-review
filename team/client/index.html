@@ -16,6 +16,7 @@
   <section class="project-bar" aria-label="项目">
     <label for="project-select">当前项目</label>
     <select id="project-select" disabled></select>
+    <button id="open-storyboard" type="button" hidden>故事与分镜</button>
     <button id="project-references" type="button" hidden>角色参考</button>
     <button id="new-project" type="button" hidden>＋ 新建项目</button>
   </section>
@@ -67,6 +68,45 @@
       <button id="open-movie" class="movie-button" type="button" disabled>导出竖屏成片</button>
     </aside>
   </main>
+  <dialog id="storyboard-dialog" class="storyboard-dialog" aria-labelledby="storyboard-title">
+    <div class="section-head">
+      <h2 id="storyboard-title">故事与分镜</h2>
+      <button id="close-storyboard" type="button">关闭</button>
+    </div>
+    <div class="actions storyboard-tabs" aria-label="故事与分镜页面">
+      <button id="story-tab" type="button" aria-pressed="true">故事原文</button>
+      <button id="board-tab" type="button" aria-pressed="false">分镜表</button>
+    </div>
+    <p id="storyboard-message" class="notice" role="status" hidden></p>
+    <section id="story-panel" class="storyboard-panel" aria-label="故事原文">
+      <label for="story-text">故事或小说片段</label>
+      <textarea id="story-text" rows="10" placeholder="粘贴或输入故事原文"></textarea>
+      <div class="actions"><button id="story-save" class="pick" type="button">保存故事原文</button></div>
+    </section>
+    <section id="board-panel" class="storyboard-panel" aria-label="分镜表" hidden>
+      <div id="board-import">
+        <label for="board-paste">粘贴分镜表（含表头）</label>
+        <textarea id="board-paste" rows="4" maxlength="180000" placeholder="可从电子表格复制，或粘贴 CSV 文本"></textarea>
+        <div class="actions">
+          <button id="load-board-sample" type="button">填入四镜头样表</button>
+          <button id="parse-board" type="button">解析并替换草稿</button>
+        </div>
+      </div>
+      <p id="board-metadata" class="context"></p>
+      <p id="board-empty" class="context">分镜表为空。</p>
+      <div id="board-table-wrap" class="board-table-wrap" tabindex="0" aria-label="分镜表内容">
+        <table class="board-table">
+          <thead><tr id="board-head"></tr></thead>
+          <tbody id="board-rows"></tbody>
+        </table>
+      </div>
+      <div id="board-actions" class="actions">
+        <button id="board-add-row" type="button">新增分镜行</button>
+        <button id="board-save" type="button">保存分镜草稿</button>
+        <button id="board-confirm" class="pick" type="button">确认并创建镜头</button>
+      </div>
+    </section>
+  </dialog>
   <dialog id="production-dialog" class="production-dialog" aria-labelledby="production-title">
     <div class="section-head"><h2 id="production-title"></h2><button id="production-close" type="button">关闭</button></div>
     <p id="production-notice" class="notice" role="status" hidden></p>
