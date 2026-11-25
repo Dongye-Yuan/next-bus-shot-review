@@ -1,3 +1,5 @@
+import { moviePlan, renderMovie } from "./movie.js";
+
 let clips = [];
 let projects = [];
 let activeProject = "demo";
@@ -81,6 +83,7 @@ function applySnapshot(data, project) {
   $("new-project").hidden = role === "viewer";
   $("open-members").hidden = role !== "owner";
   $("export-review").disabled = false;
+  $("open-movie").disabled = false;
   renderProjects();
   renderReview();
   renderTimeline();
@@ -632,6 +635,93 @@ $("sound").onclick = () => {
 };
 $("seek").max = total;
 $("seek").oninput = (event) => seekTo(Number(event.target.value));
+let exportPlan;
+let exportTitle;
+let movieController;
+let movieUrl;
+function movieMessage(message = "", error = false) {
+  const status = $("movie-message");
+  status.textContent = message;
+  status.classList.toggle("error", error);
+  status.hidden = !message;
+}
+$("open-movie").onclick = () => {
+  if (!ready || busy || movieController) return;
+  stopPlayback();
+  document.querySelectorAll("#versions video").forEach((item) => item.pause());
+  exportPlan = moviePlan(clips, state.versions, state.selected);
+  exportTitle = projects.find(({ id }) => id === activeProject)?.title ?? "竖屏成片";
+  const { shots, missing, duration } = exportPlan;
+  $("movie-details").textContent = shots.length
+    ? exportTitle + " · " + shots.length + " 个镜头 · " + clock(duration) + " · 720 × 1280 MP4"
+    : "这个项目还没有镜头。";
+  const list = $("movie-missing");
+  list.hidden = !missing.length;
+  list.replaceChildren(...missing.map((shot) => {
+    const row = element("li");
+    row.append(button("镜头 " + shotNumber(shot.index) + " · " + shot.title, () => {
+      $("movie-dialog").close();
+      selectShot(shot.id);
+      seekTo(clipStart(shot.id));
+      notice("请选用一个已通过的版本，再导出成片。", true);
+      $("shot-title").focus();
+    }));
+    return row;
+  }));
+  movieMessage(missing.length ? "请先为以下镜头选用版本。" : "");
+  $("start-movie").hidden = !shots.length || Boolean(missing.length);
+  $("movie-dialog").showModal();
+};
+$("close-movie").onclick = () => $("movie-dialog").close();
+$("movie-dialog").addEventListener("close", () => {
+  movieController?.abort();
+  if (movieUrl) URL.revokeObjectURL(movieUrl);
+  movieUrl = null;
+  $("download-movie").removeAttribute("href");
+  $("download-movie").hidden = true;
+  $("movie-progress").hidden = true;
+});
+$("start-movie").onclick = async () => {
+  if (movieController || !exportPlan?.shots.length || exportPlan.missing.length) return;
+  const controller = new AbortController();
+  movieController = controller;
+  const start = $("start-movie");
+  const progress = $("movie-progress");
+  start.disabled = true;
+  progress.hidden = false;
+  progress.removeAttribute("value");
+  progress.max = exportPlan.duration;
+  $("close-movie").textContent = "取消导出";
+  movieMessage("正在加载素材，请保持此页面在前台。");
+  try {
+    let rendering = false;
+    const file = await renderMovie(exportPlan, (elapsed) => {
+      if (!rendering) {
+        movieMessage("正在生成 MP4，请保持此页面在前台。");
+        rendering = true;
+      }
+      progress.value = elapsed;
+    }, controller);
+    controller.signal.throwIfAborted();
+    progress.value = progress.max;
+    movieUrl = URL.createObjectURL(file);
+    const link = $("download-movie");
+    link.href = movieUrl;
+    link.download = exportTitle.replace(/[<>:"/\\|?*]/g, "_") + "-竖屏成片.mp4";
+    link.hidden = false;
+    start.hidden = true;
+    movieMessage("成片已生成。");
+  } catch (error) {
+    if ($("movie-dialog").open) {
+      progress.hidden = true;
+      movieMessage(error.message || "导出失败，请重试。", true);
+    }
+  } finally {
+    movieController = null;
+    start.disabled = false;
+    $("close-movie").textContent = "关闭";
+  }
+};
 $("export-review").onclick = () => {
   const report = {
     project: projects.find(({ id }) => id === activeProject)?.title,

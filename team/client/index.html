@@ -26,7 +26,7 @@
     </nav>
     <section class="review" aria-labelledby="shot-title">
       <div class="section-head">
-        <div><p class="eyebrow" id="shot-number"></p><h2 id="shot-title"></h2></div>
+        <div><p class="eyebrow" id="shot-number"></p><h2 id="shot-title" tabindex="-1"></h2></div>
         <div class="shot-actions" id="shot-actions" hidden>
           <button id="edit-shot" type="button">编辑镜头</button>
           <button id="move-up" type="button">上移</button>
@@ -59,8 +59,20 @@
       </div>
       <div id="timeline" class="timeline" aria-label="预览镜头"></div>
       <p id="preview-status" class="preview-status" aria-live="polite"></p>
+      <button id="open-movie" class="movie-button" type="button" disabled>导出竖屏成片</button>
     </aside>
   </main>
+  <dialog id="movie-dialog" aria-labelledby="movie-heading">
+    <div class="section-head"><h2 id="movie-heading">导出竖屏成片</h2><button id="close-movie" type="button">关闭</button></div>
+    <p id="movie-details" class="context"></p>
+    <ul id="movie-missing" class="movie-missing" hidden></ul>
+    <p id="movie-message" class="notice" role="status" hidden></p>
+    <progress id="movie-progress" aria-label="成片导出进度" hidden></progress>
+    <div class="actions movie-actions">
+      <button id="start-movie" class="pick" type="button" hidden>生成 MP4</button>
+      <a id="download-movie" class="button" hidden>下载 MP4</a>
+    </div>
+  </dialog>
   <dialog id="editor-dialog" aria-labelledby="editor-heading">
     <form id="editor-form">
       <h2 id="editor-heading"></h2>

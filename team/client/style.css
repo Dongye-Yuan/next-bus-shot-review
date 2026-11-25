@@ -161,3 +161,11 @@ dialog::backdrop { background: #060b0cbb; }
   .shot-row[data-drop="before"]::after { inset-inline: -5px auto; }
   .shot-row[data-drop="after"]::after { inset-inline: auto -5px; }
 }
+
+.movie-button { margin-top: 12px; width: 100%; color: var(--gold); }
+.movie-missing { display: grid; gap: 6px; padding-inline-start: 18px; }
+.movie-missing li button { white-space: normal; text-align: left; }
+.movie-actions { margin-top: 14px; gap: 8px; }
+.movie-actions a { text-decoration: none; color: var(--gold); }
+#movie-progress { width: 100%; margin-top: 12px; accent-color: var(--gold); }
+.movie-canvas { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

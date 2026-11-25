@@ -250,6 +250,22 @@ async function members(request, env, user, url) {
   return json({ email, role: data.role });
 }
 
+async function exportSample(request, id) {
+  const version = initial.versions.find((sample) => sample.id === id);
+  if (!version) return fail("找不到示例素材。", 404);
+  const range = request.headers.get("Range");
+  const response = await fetch(version.file, { redirect: "error", headers: range ? { Range: range } : {} });
+  const contentType = response.headers.get("Content-Type")?.split(";")[0];
+  if (!response.ok) return fail("示例素材暂时无法读取。", 502);
+  if (!mediaTypes.has(contentType)) return fail("示例素材格式无法读取。", 502);
+  const resultHeaders = new Headers(headers);
+  for (const name of ["Content-Type", "Content-Length", "Accept-Ranges", "Content-Range"]) {
+    const value = response.headers.get(name);
+    if (value) resultHeaders.set(name, value);
+  }
+  return new Response(response.body, { status: response.status, headers: resultHeaders });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -257,11 +273,13 @@ export default {
       const user = await identity(request, env);
       if (!user) return fail("此团队工作区仅供已授权的成员访问。", 403);
       const { pathname } = url;
-      if (request.method === "GET" && ["/", "/app.js", "/style.css"].includes(pathname)) {
+      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/style.css"].includes(pathname)) {
         const key = pathname === "/" ? "index.html" : pathname.slice(1);
-        const type = { "index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css" }[key];
+        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "style.css": "text/css" }[key];
         return new Response(assets[key], { headers: { ...headers, "Content-Type": type + "; charset=utf-8" } });
       }
+      const sampleMatch = /^\/api\/export-sample\/([a-z0-9-]+)$/.exec(pathname);
+      if (sampleMatch && request.method === "GET") return await exportSample(request, sampleMatch[1]);
       if (pathname === "/api/members") return await members(request, env, user, url);
       if (pathname === "/api/projects" && request.method === "GET") return await listProjects(env, user);
       if (request.method === "POST") {
