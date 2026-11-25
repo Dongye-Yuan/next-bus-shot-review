@@ -216,3 +216,14 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .board-table textarea { height: 66px; min-width: 120px; }
 .board-row-actions { display: grid; gap: 4px; }
 .board-row-actions button { padding: 3px 8px; min-height: 28px; font-size: 12px; }
+
+#script-import .actions { margin-top: 5px; }
+.script-table td:nth-child(4), .script-table td:nth-child(5), .script-table td:nth-child(6) { min-width: 175px; }
+.prompt-preview { padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.prompt-preview label { margin: 0; }
+.board-prompt-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.board-prompt-controls label { margin: 0; }
+.board-prompt-controls input {
+  display: block; width: 100%; min-height: 33px; padding: 4px 8px; font: inherit;
+  color: var(--ink); background: #192224; border: 1px solid var(--line); border-radius: 6px;
+}

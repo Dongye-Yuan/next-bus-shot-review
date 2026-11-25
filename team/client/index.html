@@ -75,15 +75,53 @@
     </div>
     <div class="actions storyboard-tabs" aria-label="故事与分镜页面">
       <button id="story-tab" type="button" aria-pressed="true">故事原文</button>
+      <button id="script-tab" type="button" aria-pressed="false">剧本</button>
       <button id="board-tab" type="button" aria-pressed="false">分镜表</button>
     </div>
     <p id="storyboard-message" class="notice" role="status" hidden></p>
+    <div id="prompt-preview" class="storyboard-panel prompt-preview" hidden>
+      <div class="section-head">
+        <label for="prompt-text">提示词</label>
+        <button id="close-prompt-preview" type="button">收起提示词</button>
+      </div>
+      <textarea id="prompt-text" rows="6" readonly></textarea>
+    </div>
     <section id="story-panel" class="storyboard-panel" aria-label="故事原文">
       <label for="story-text">故事或小说片段</label>
       <textarea id="story-text" rows="10" placeholder="粘贴或输入故事原文"></textarea>
       <div class="actions"><button id="story-save" class="pick" type="button">保存故事原文</button></div>
     </section>
+    <section id="script-panel" class="storyboard-panel" aria-label="剧本" hidden>
+      <p id="script-metadata" class="context"></p>
+      <p id="script-prompt-hint" class="context">先保存故事原文，即可复制剧本提示词。</p>
+      <div class="actions"><button id="copy-script-prompt" type="button">复制剧本提示词</button></div>
+      <div id="script-import">
+        <label for="script-paste">粘贴剧本表格（含表头）</label>
+        <textarea id="script-paste" rows="4" maxlength="100000" placeholder="场景、出场角色、动作、对白、剧情推进"></textarea>
+        <div class="actions"><button id="parse-script" type="button">解析并替换剧本草稿</button></div>
+      </div>
+      <p id="script-empty" class="context">从一场戏开始，或粘贴生成的剧本表格。</p>
+      <div id="script-table-wrap" class="board-table-wrap" tabindex="0" aria-label="剧本内容">
+        <table class="board-table script-table">
+          <thead><tr id="script-head"></tr></thead>
+          <tbody id="script-rows"></tbody>
+        </table>
+      </div>
+      <div id="script-actions" class="actions">
+        <button id="script-add-row" type="button">新增场景</button>
+        <button id="script-save" type="button">保存剧本草稿</button>
+        <button id="script-confirm" class="pick" type="button">确认剧本</button>
+      </div>
+    </section>
     <section id="board-panel" class="storyboard-panel" aria-label="分镜表" hidden>
+      <div class="board-prompt">
+        <p id="board-prompt-hint" class="context"></p>
+        <div class="board-prompt-controls">
+          <label>目标镜头数（选填）<input id="prompt-shot-count" type="number" min="1" max="60" step="1"></label>
+          <label>目标总时长（秒，选填）<input id="prompt-seconds" type="number" min="1" max="18000" step="1"></label>
+          <button id="copy-board-prompt" type="button">复制分镜提示词</button>
+        </div>
+      </div>
       <div id="board-import">
         <label for="board-paste">粘贴分镜表（含表头）</label>
         <textarea id="board-paste" rows="4" maxlength="180000" placeholder="可从电子表格复制，或粘贴 CSV 文本"></textarea>

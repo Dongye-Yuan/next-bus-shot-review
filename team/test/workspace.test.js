@@ -329,3 +329,29 @@ test("saves story and draft separately and confirms ordered shots once", async (
   assert.equal(readback.state.storyboard.rows[0].action, "两人共伞");
   assert.equal((await (await send("/api/state", "viewer")).json()).state.clips.length, 4);
 });
+
+test("keeps the confirmed script available while a later draft is edited", async (t) => {
+  const { db, send, post } = fixture();
+  t.after(() => db.close());
+  const endpoint = "/api/storyboard";
+  const first = { scene: "雨夜站棚", characters: "许棠、林澈", action: "两人并肩撑伞。",
+    dialogue: "", beat: "从各自等车到共伞。" };
+  const saveScript = (kind, scenes, revision, role = "reviewer") => post(endpoint, role, { kind, scenes, revision });
+  assert.equal((await saveScript("saveScript", [first], 0, "viewer")).status, 403);
+  assert.equal((await saveScript("confirmScript", [{ ...first, beat: "" }], 0)).status, 400);
+  const drafted = await (await saveScript("saveScript", [first], 0)).json();
+  assert.equal(drafted.state.script.draft.scenes[0].action, first.action);
+  assert.equal(drafted.state.script.confirmed, undefined);
+  const approved = await (await saveScript("confirmScript", [first], 1)).json();
+  assert.equal(approved.state.script.draft, null);
+  assert.equal(approved.state.script.confirmed.scenes[0].action, first.action);
+  const newer = { ...first, action: "许棠把伞往林澈身边移了半步。" };
+  assert.equal((await saveScript("saveScript", [newer], 2)).status, 200);
+  assert.equal((await saveScript("confirmScript", [newer], 2)).status, 409);
+  const readback = await (await send("/api/state", "viewer")).json();
+  assert.equal(readback.state.script.confirmed.scenes[0].action, first.action);
+  assert.equal(readback.state.script.draft.scenes[0].action, newer.action);
+  assert.equal(readback.state.clips.length, 4);
+  const revised = await (await saveScript("confirmScript", [newer], 3)).json();
+  assert.equal(revised.state.script.confirmed.scenes[0].action, newer.action);
+});

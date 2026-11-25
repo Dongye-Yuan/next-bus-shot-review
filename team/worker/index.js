@@ -1,4 +1,4 @@
-import { normalizeBoard, clipFromBoardRow, storyLimit } from "../client/board-data.js";
+import { normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit } from "../client/board-data.js";
 
 const demoClips = [
   { id: "01", title: "雨夜站棚", duration: 4, context: "双人中景，建立站棚与人物站位。" },
@@ -158,6 +158,24 @@ async function editStoryboard(request, env, current, user) {
     }
     current.state.story = { text: input.story, updatedAt: new Date().toISOString(), updatedBy: user.email };
     return saveProduction(env, current, user, "saveStory");
+  }
+  if (["saveScript", "confirmScript"].includes(input.kind)) {
+    const confirm = input.kind === "confirmScript";
+    let scenes;
+    try {
+      scenes = normalizeScript(input.scenes, confirm);
+    } catch (error) {
+      return fail(error.message, 400);
+    }
+    const record = { scenes, at: new Date().toISOString(), by: user.email };
+    const script = current.state.script ??= {};
+    if (confirm) {
+      script.confirmed = record;
+      script.draft = null;
+    } else {
+      script.draft = record;
+    }
+    return saveProduction(env, current, user, input.kind, { title: scenes.length + " 场" });
   }
   if (!["draft", "confirm"].includes(input.kind)) return fail("分镜操作无效。", 400);
   if (current.state.storyboard?.confirmedAt) return fail("此项目的分镜已确认建镜，可在镜头列表继续编辑。", 409);

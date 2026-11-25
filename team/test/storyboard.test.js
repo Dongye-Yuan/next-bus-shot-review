@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardSample, clipFromBoardRow, normalizeBoard, parseBoard } from "../client/board-data.js";
+import { boardSample, clipFromBoardRow, normalizeBoard, parseBoard, parseScript, normalizeScript, scriptPrompt, storyboardPrompt } from "../client/board-data.js";
 
 test("parses spreadsheet paste and quoted CSV, preserving optional fields and row order", () => {
   const sample = parseBoard(boardSample);
@@ -24,4 +24,21 @@ test("accepts unfinished drafts but rejects incomplete, duplicate or invalid con
   assert.throws(() => normalizeBoard([row, { ...row, number: "１" }], true), /重复/);
   assert.throws(() => normalizeBoard([{ ...row, duration: "3.5" }], true), /整数/);
   assert.throws(() => normalizeBoard([{ ...row, duration: "301" }], true), /整数/);
+});
+
+
+test("builds both AI prompts with compatible headers and accepts pasted script output", () => {
+  const story = "下雨了。许棠和林澈一起等车。";
+  const header = "场景\t出场角色\t动作\t对白\t剧情推进";
+  const scene = "雨夜公交站棚\t许棠、林澈\t许棠整理绿伞，林澈望向车道。\t\t两人从各自等车到并肩共伞。";
+  assert.ok(scriptPrompt(story).includes(header));
+  assert.ok(scriptPrompt(story).includes(story));
+  const scenes = parseScript(["```tsv", header, scene, "```"].join("\n"));
+  assert.equal(scenes[0].dialogue, "");
+  assert.equal(normalizeScript(scenes, true)[0].beat, "两人从各自等车到并肩共伞。");
+  assert.throws(() => normalizeScript([{ ...scenes[0], beat: "" }], true), /剧情推进/);
+  const prompt = storyboardPrompt(scenes, { count: 4, seconds: 17 });
+  assert.match(prompt, /正好 4 个镜头，总时长 17 秒/);
+  assert.ok(prompt.includes(boardSample.split("\n")[0]));
+  assert.ok(prompt.includes(scenes[0].action));
 });
