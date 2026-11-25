@@ -1,4 +1,5 @@
 import { moviePlan, renderMovie } from "./movie.js";
+import { setupProduction } from "./production.js";
 
 let clips = [];
 let projects = [];
@@ -8,6 +9,7 @@ let revision = 0;
 let role = "viewer";
 let ready = false;
 let busy = false;
+let capabilities = {};
 const drafts = new Map();
 const statuses = { approved: "已通过", rejected: "已退回", pending: "待审" };
 const $ = (id) => document.getElementById(id);
@@ -77,6 +79,7 @@ function applySnapshot(data, project) {
   state = { ...data.state, openShot };
   revision = data.revision;
   role = data.role;
+  capabilities = data.capabilities ?? {};
   ready = true;
   const labels = { owner: "所有者", reviewer: "审核员", viewer: "只读成员" };
   $("storage").textContent = "团队共享 · " + labels[role];
@@ -101,14 +104,14 @@ async function refreshWorkspace(project) {
   rememberProject(target);
 }
 
-async function commit(action, form, path = "/api/review", onError = notice) {
+async function commit(action, form, path = form ? "/api/upload" : "/api/review", onError = notice) {
   if (busy || !ready || role === "viewer") return false;
   busy = true;
   $("project-select").disabled = true;
   try {
     if (form) form.set("revision", String(revision));
     const data = form
-      ? await requestData(scopedPath("/api/upload"), { method: "POST", body: form })
+      ? await requestData(scopedPath(path), { method: "POST", body: form })
       : await post(scopedPath(path), { ...action, revision });
     applySnapshot(data, activeProject);
     return true;
@@ -195,7 +198,7 @@ function versionCard(version) {
     note.readOnly = true;
     actions.hidden = true;
   }
-  body.append(element("h3", version.title), badges, label, actions);
+  body.append(element("h3", version.title), badges, label, actions, productionUI.versionTools(version, currentShot()));
   if (version.reviewedBy) body.append(element("small", "最近审核 · " + version.reviewedBy));
   card.append(frame, body);
   return card;
@@ -297,6 +300,7 @@ function renderReview() {
   $("shot-number").textContent = current ? "镜头 " + shotNumber(index) + " · " + current.duration + " 秒" : "";
   $("shot-title").textContent = current?.title ?? (ready ? "这个项目还没有镜头" : "正在打开项目…");
   $("shot-context").textContent = current?.context ?? (canWrite ? "点击「新增镜头」填写分镜，再导入该镜头的图片或视频。" : "");
+  productionUI.renderShot(current, ready);
   const versions = state.versions.filter((version) => version.shot === current?.id);
   $("versions").replaceChildren(...versions.map(versionCard));
   if (current && versions.length === 0) {
@@ -305,6 +309,9 @@ function renderReview() {
   const actions = {
     review: "审核", pick: "选用", import: "导入",
     createProject: "新建项目", addShot: "新增镜头", editShot: "编辑镜头", moveShot: "调整镜头顺序",
+    addReference: "新增角色参考", confirmReference: "确认角色参考", bindReferences: "绑定角色参考",
+    lockFrame: "确认关键帧", addIssue: "标记问题", checkConsistency: "AI 一致性检查",
+    startGeneration: "发起生成", generationReceipt: "保存任务回执", generationProgress: "更新生成状态", generationComplete: "导入生成结果",
   };
   $("team-activity").replaceChildren(...state.activity.slice(0, 10).map((entry) => {
     const version = state.versions.find(({ id }) => id === entry.version);
@@ -731,8 +738,9 @@ $("export-review").onclick = () => {
     activity: state.activity,
     shots: clips.map(({ id, title, duration, context }, index) => ({
       id, title, duration, context, start: starts[index], selectedVersion: state.selected[id] ?? null,
-      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy }) => ({
+      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, issues, replaces, keyframe }) => ({
         id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null, reviewedBy: reviewedBy ?? null,
+        checkedAt, checkedFrames, issues, replaces, keyframe,
       })),
     })),
   };
@@ -777,6 +785,8 @@ async function openProject(project) {
 }
 $("project-select").onchange = (event) => openProject(event.target.value);
 $("refresh-team").onclick = () => openProject();
+const productionUI = setupProduction({ $, element, button, context: () => ({ state, role, capabilities }),
+  commit, checkFile: validateAsset });
 renderReview();
 showPreview();
 openProject();

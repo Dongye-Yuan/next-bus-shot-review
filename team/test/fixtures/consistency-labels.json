@@ -1,0 +1,6 @@
+[
+  {"version":"01-approved","split":"development","abnormal":false,"note":"人工选用的站棚双人画面，用于检查可见人设和服装。"},
+  {"version":"02-approved","split":"development","abnormal":false,"note":"人工确认的林澈正面近景，浅疤在本人左眉尾。"},
+  {"version":"03-old","split":"holdout","abnormal":true,"note":"许棠左侧面可见黄色发夹，与本人右侧的设定冲突。"},
+  {"version":"03-fixed","split":"holdout","abnormal":false,"note":"人工确认的许棠右侧面，黄色发夹在她的本人右侧。"}
+]

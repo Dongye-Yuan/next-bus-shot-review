@@ -16,6 +16,7 @@
   <section class="project-bar" aria-label="项目">
     <label for="project-select">当前项目</label>
     <select id="project-select" disabled></select>
+    <button id="project-references" type="button" hidden>角色参考</button>
     <button id="new-project" type="button" hidden>＋ 新建项目</button>
   </section>
   <main class="layout">
@@ -37,6 +38,10 @@
       </div>
       <p id="shot-context" class="context"></p>
       <p id="notice" class="notice" role="status" hidden></p>
+      <div id="shot-production" class="production-card" hidden>
+        <p id="shot-production-summary" class="context"></p>
+        <div id="shot-production-actions" class="actions"></div>
+      </div>
       <div id="versions" class="versions"></div>
       <details id="activity-panel" class="team-activity" hidden>
         <summary>最近团队操作</summary>
@@ -62,6 +67,11 @@
       <button id="open-movie" class="movie-button" type="button" disabled>导出竖屏成片</button>
     </aside>
   </main>
+  <dialog id="production-dialog" class="production-dialog" aria-labelledby="production-title">
+    <div class="section-head"><h2 id="production-title"></h2><button id="production-close" type="button">关闭</button></div>
+    <p id="production-notice" class="notice" role="status" hidden></p>
+    <div id="production-body"></div>
+  </dialog>
   <dialog id="movie-dialog" aria-labelledby="movie-heading">
     <div class="section-head"><h2 id="movie-heading">导出竖屏成片</h2><button id="close-movie" type="button">关闭</button></div>
     <p id="movie-details" class="context"></p>

@@ -21,7 +21,11 @@ function fixture() {
       }),
     }) },
     BUCKET: {
-      put: (id, file) => files.set(id, file),
+      put: async (id, file, { httpMetadata } = {}) => {
+        const blob = file instanceof Blob ? file
+          : new Blob([await new Response(file).arrayBuffer()], { type: httpMetadata.contentType });
+        files.set(id, blob);
+      },
       delete: (id) => files.delete(id),
       head: (id) => {
         const file = files.get(id);
@@ -49,7 +53,7 @@ function fixture() {
     form.append("file", new File(["media bytes"], "test.mp4", { type: "video/mp4" }));
     return send(path, role, { method: "POST", headers: { Origin: origin }, body: form });
   };
-  return { db, files, send, post, upload };
+  return { db, files, env, send, post, upload, origin };
 }
 
 test("isolates access, persists shared review revisions and serves private media ranges", async (t) => {
@@ -176,4 +180,120 @@ test("moves a shot directly across the list and retains its selected version", a
   assert.equal(saved.state.selected["04"], "04-doubao");
   const movedBack = await (await move({ revision: 1, shot: "04", target: "03" })).json();
   assert.deepEqual(movedBack.state.clips.map(({ id }) => id), ["01", "02", "03", "04"]);
+});
+
+test("locks references, preserves evidence and collects the queued repair as a separate version", async (t) => {
+  const { db, env, send, post, origin } = fixture();
+  t.after(() => db.close());
+  const form = new FormData();
+  for (const [key, val] of Object.entries({ revision: "0", name: "许棠", identity: "本人右侧黄色发夹", outfit: "米白雨衣" })) form.set(key, val);
+  for (const angle of ["front", "side", "full"]) form.set(angle, new File(["sample"], angle + ".png", { type: "image/png" }));
+  const owner = (path, body) => post(path, "owner", body);
+  const uploaded = await send("/api/references", "owner", { method: "POST", headers: { Origin: origin }, body: form });
+  assert.equal(uploaded.status, 200);
+  const ref = (await uploaded.json()).state.production.references[0];
+  assert.equal(ref.confirmedAt, undefined);
+  assert.equal((await send(ref.images.side.file, "outsider")).status, 403);
+  assert.equal((await send(ref.images.side.file, "viewer")).status, 200);
+  const bind = { kind: "bindReferences", shot: "03", references: [{ reference: ref.id, angle: "side" }], revision: 1 };
+  assert.equal((await owner("/api/production", bind)).status, 400);
+  assert.equal((await owner("/api/production", { kind: "confirmReference", reference: ref.id, revision: 1 })).status, 200);
+  assert.equal((await owner("/api/production", { ...bind, revision: 2 })).status, 200);
+  const issue = { kind: "addIssue", shot: "03", version: "03-old", reference: ref.id, time: 10,
+    feature: "标志性特征", note: "黄色发夹跑到了本人左侧。" };
+  const marked = await (await owner("/api/production", { ...issue, revision: 3 })).json();
+  assert.equal(marked.state.versions.find(({ id }) => id === "03-old").issues[0].time, 0);
+  assert.equal((await owner("/api/review", { kind: "review", version: "03-old", status: "rejected", note: issue.note, revision: 4 })).status, 200);
+  const start = { kind: "submit", type: "image", shot: "03", from: "03-old", prompt: "修复发夹位置", revision: 5 };
+  assert.equal((await owner("/api/generation", start)).status, 503);
+  assert.equal((await owner("/api/vision", { version: "03-old", revision: 5, frames: [] })).status, 503);
+
+  env.FAL_KEY = "test-generation-key";
+  env.OPENAI_API_KEY = "test-vision-key";
+  const frames = [{ time: 0, image: "data:image/jpeg;base64,YQ==" }];
+  let submitted = 0;
+  let queueState = "IN_QUEUE";
+  let uncertain = false;
+  let videoJob = false;
+  t.mock.method(globalThis, "fetch", async (resource, init) => {
+    const url = new URL(resource);
+    if (url.hostname === "api.openai.com") {
+      const input = JSON.parse(init.body);
+      assert.equal(input.store, false);
+      assert.equal(input.input[0].content.filter(({ type }) => type === "input_image").length, 2);
+      const text = JSON.stringify({ issues: [{ reference: ref.id, frame: 0, feature: issue.feature, note: issue.note }] });
+      return Response.json({ status: "completed", output: [{ content: [{ type: "output_text", text }] }] });
+    }
+    if (url.hostname === "queue.fal.run" && init.method === "POST") {
+      submitted++;
+      if (uncertain) throw new Error("connection dropped");
+      const input = JSON.parse(init.body);
+      videoJob = url.pathname.endsWith("/image-to-video");
+      if (videoJob) {
+        assert.ok(input.image_url.startsWith("data:image/jpeg;base64,"));
+        assert.equal(input.duration, "5");
+        return Response.json({ request_id: "test-video-000" + submitted });
+      }
+      assert.equal(input.aspect_ratio, "9:16");
+      assert.ok(input.image_urls[0].endsWith("/03-old.png"));
+      assert.ok(input.image_urls[1].startsWith("data:image/png;base64,"));
+      assert.match(input.prompt, /本人右侧/);
+      return Response.json({ request_id: "test-request-0001" });
+    }
+    if (url.hostname === "queue.fal.run" && url.pathname.endsWith("/status")) return Response.json({ status: queueState });
+    if (url.hostname === "queue.fal.run") return Response.json(videoJob
+      ? { video: { url: "https://v3.fal.media/test/result.mp4" } }
+      : { images: [{ url: "https://v3.fal.media/test/result.jpeg" }] });
+    assert.equal(url.hostname, "v3.fal.media");
+    return new Response(videoJob ? "mp4!" : "jpeg", { headers: {
+      "Content-Type": videoJob ? "video/mp4" : "image/jpeg", "Content-Length": "4",
+    } });
+  });
+  const detection = await (await owner("/api/vision", { version: "03-old", revision: 5, frames })).json();
+  assert.deepEqual(detection.state.versions.find(({ id }) => id === "03-old").issues.map(({ source }) => source), ["manual", "vision"]);
+  const queued = await (await owner("/api/generation", { ...start, revision: 6 })).json();
+  const job = queued.state.production.jobs[0];
+  assert.equal(job.status, "queued");
+  assert.equal((await owner("/api/generation", { ...start, revision: queued.revision })).status, 409);
+  const poll = { kind: "poll", job: job.id };
+  assert.equal((await owner("/api/generation", poll)).status, 200);
+  queueState = "COMPLETED";
+  const done = await (await owner("/api/generation", poll)).json();
+  const version = done.state.versions.find(({ id }) => id === job.id);
+  assert.equal(version.status, "pending");
+  assert.equal(version.replaces, "03-old");
+  assert.equal(done.state.selected["03"], "03-fixed");
+  assert.equal(await (await send(version.file, "viewer")).text(), "jpeg");
+  assert.equal((await owner("/api/production", { kind: "lockFrame", shot: "03", version: job.id, revision: done.revision })).status, 400);
+  const reviewed = await (await owner("/api/review", { kind: "review", version: job.id, status: "approved", revision: done.revision })).json();
+  const locked = await (await owner("/api/production", { kind: "lockFrame", shot: "03", version: job.id, revision: reviewed.revision })).json();
+  assert.equal(locked.state.production.shots["03"].keyframe, job.id);
+
+  const motion = { ...start, type: "video", from: undefined, revision: locked.revision };
+  const firstVideo = await (await owner("/api/generation", motion)).json();
+  const firstVideoId = firstVideo.state.production.jobs.at(-1).id;
+  const videoResult = await (await owner("/api/generation", { kind: "poll", job: firstVideoId })).json();
+  assert.equal(videoResult.state.versions.at(-1).keyframe, job.id);
+  const returned = await (await owner("/api/review", { kind: "review", version: firstVideoId,
+    status: "rejected", note: "重做动作", revision: videoResult.revision })).json();
+  const motionRepair = { ...motion, from: firstVideoId, revision: returned.revision };
+  assert.equal((await owner("/api/generation", { ...motionRepair, reuse: false })).status, 400);
+  const secondVideo = await (await owner("/api/generation", { ...motionRepair, reuse: true })).json();
+  const completedVideo = await (await owner("/api/generation", { kind: "poll", job: secondVideo.state.production.jobs.at(-1).id })).json();
+  assert.equal(completedVideo.state.versions.at(-1).replaces, firstVideoId);
+  assert.equal(completedVideo.state.versions.at(-1).keyframe, job.id);
+
+  uncertain = true;
+  const failed = await (await owner("/api/generation", { ...start, revision: completedVideo.revision })).json();
+  assert.equal(failed.state.production.jobs.at(-1).status, "unknown");
+  assert.equal((await owner("/api/generation", { ...start, revision: failed.revision })).status, 409);
+  assert.equal(submitted, 4);
+  const repair = new FormData();
+  repair.set("revision", String(failed.revision));
+  repair.set("shot", "03");
+  repair.set("replaces", "03-old");
+  repair.set("file", new File(["manual repair"], "修正版.png", { type: "image/png" }));
+  const manual = await (await send("/api/upload", "owner", { method: "POST", headers: { Origin: origin }, body: repair })).json();
+  assert.equal(manual.state.versions.at(-1).replaces, "03-old");
+  assert.equal(manual.state.versions.find(({ id }) => id === "03-old").status, "rejected");
 });
