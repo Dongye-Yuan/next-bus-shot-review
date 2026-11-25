@@ -16,6 +16,8 @@ export function moviePlan(clips, versions, selected) {
 const width = 720;
 const height = 1280;
 const fps = 30;
+const demoMedia = "https://next-bus-shot-review.riferice4.chatgpt.site/media/";
+const demoExportMedia = "https://raw.githubusercontent.com/Dongye-Yuan/next-bus-shot-review/5034e17b5910d7cd439b71c9a8f14a48dec2461c/dist/media/";
 
 function waitForMedia(node, event, start, signal) {
   return new Promise((resolve, reject) => {
@@ -46,8 +48,13 @@ function loadShot(shot, signal) {
     node.playsInline = true;
     node.preload = "auto";
   }
-  const url = shot.version.file.startsWith("/api/media/")
-    ? shot.version.file : "/api/export-sample/" + encodeURIComponent(shot.version.id);
+  const source = shot.version.file;
+  let url = source;
+  if (source.startsWith(demoMedia)) {
+    // The published demo serves the same files without cross-origin canvas access.
+    node.crossOrigin = "anonymous";
+    url = demoExportMedia + encodeURIComponent(source.slice(demoMedia.length));
+  }
   return {
     node, video, shot,
     ready: waitForMedia(node, video ? "loadeddata" : "load", () => { node.src = url; }, signal)
