@@ -100,3 +100,12 @@ textarea { padding: 6px; resize: vertical; min-height: 45px; width: 100%; color:
 .team-activity { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 .team-activity summary { color: var(--gold); cursor: pointer; }
 .team-activity li { overflow-wrap: anywhere; color: var(--muted); margin: 5px 0; }
+dialog { width: min(600px, calc(100% - 24px)); max-height: calc(100% - 24px); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 19px; }
+dialog::backdrop { background: #060b0cbb; }
+.member-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 12px; }
+.member-form label { display: grid; gap: 3px; color: var(--muted); }
+.member-form label:first-child { flex: 1 1 210px; }
+.member-form input, .member-form select { min-height: 33px; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #192224; color: var(--ink); padding: 4px 8px; }
+.member-list { margin: 12px 0; }
+.member-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 7px 0; border-top: 1px solid var(--line); }
+.member-row span { flex: 1; overflow-wrap: anywhere; }

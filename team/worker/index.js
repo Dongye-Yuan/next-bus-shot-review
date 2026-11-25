@@ -29,11 +29,13 @@ const mediaTypes = new Map([
 ]);
 const sizeLimit = 50 * 1024 * 1024;
 
-function identity(request, env) {
+async function identity(request, env) {
   const id = request.headers.get("oai-authenticated-user-id");
   const email = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase();
   if (!id || !email) return null;
   if (email === env.OWNER_EMAIL?.trim().toLowerCase()) return { id, email, role: "owner" };
+  const member = await env.DB.prepare("SELECT role FROM team_member WHERE email = ?").bind(email).first();
+  if (member) return member.role === "revoked" ? null : { id, email, role: member.role };
   const includes = (list) => (list ?? "").split(",").some((entry) => entry.trim().toLowerCase() === email);
   if (includes(env.REVIEWER_EMAILS)) return { id, email, role: "reviewer" };
   if (includes(env.VIEWER_EMAILS)) return { id, email, role: "viewer" };
@@ -145,18 +147,46 @@ async function media(request, env, current, id) {
   return object ? new Response(object.body, { status: range ? 206 : 200, headers: resultHeaders }) : fail("找不到该素材。", 404);
 }
 
+async function members(request, env, user, url) {
+  if (user.role !== "owner") return fail("只有工作区所有者可以管理成员。", 403);
+  if (request.method === "GET") {
+    const rows = await env.DB.prepare(
+      "SELECT email, role, updated_at FROM team_member WHERE role != 'revoked' ORDER BY email",
+    ).all();
+    return json({ members: rows.results });
+  }
+  if (request.method !== "POST") return fail("请求方法无效。", 405);
+  if (request.headers.get("Origin") !== url.origin) return fail("无法执行跨站修改。", 403);
+  if (!request.headers.get("Content-Type")?.startsWith("application/json")) return fail("请求格式无效。", 415);
+  if (Number(request.headers.get("Content-Length")) > 4096) return fail("请求太大。", 413);
+  const data = await request.json();
+  const email = typeof data?.email === "string" ? data.email.trim().toLowerCase() : "";
+  if (email.length > 254 || !/^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(email)) {
+    return fail("请输入有效的 ChatGPT 登录邮箱。", 400);
+  }
+  if (email === user.email || !["reviewer", "viewer", "revoked"].includes(data.role)) {
+    return fail("不能修改所有者权限，或提供的角色无效。", 400);
+  }
+  await env.DB.prepare(
+    "INSERT INTO team_member (email, role, updated_at) VALUES (?, ?, ?) " +
+    "ON CONFLICT(email) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at",
+  ).bind(email, data.role, new Date().toISOString()).run();
+  return json({ email, role: data.role });
+}
+
 export default {
   async fetch(request, env) {
-    const user = identity(request, env);
     const url = new URL(request.url);
-    if (!user) return fail("此团队工作区仅供已授权的成员访问。", 403);
-    const { pathname } = url;
-    if (request.method === "GET" && ["/", "/app.js", "/style.css"].includes(pathname)) {
-      const key = pathname === "/" ? "index.html" : pathname.slice(1);
-      const type = { "index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css" }[key];
-      return new Response(assets[key], { headers: { ...headers, "Content-Type": type + "; charset=utf-8" } });
-    }
     try {
+      const user = await identity(request, env);
+      if (!user) return fail("此团队工作区仅供已授权的成员访问。", 403);
+      const { pathname } = url;
+      if (request.method === "GET" && ["/", "/app.js", "/style.css"].includes(pathname)) {
+        const key = pathname === "/" ? "index.html" : pathname.slice(1);
+        const type = { "index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css" }[key];
+        return new Response(assets[key], { headers: { ...headers, "Content-Type": type + "; charset=utf-8" } });
+      }
+      if (pathname === "/api/members") return await members(request, env, user, url);
       const current = await load(env);
       if (pathname === "/api/state" && request.method === "GET") return snapshot(current, user);
       const match = /^\/api\/media\/([a-f\d-]{36})$/.exec(pathname);

@@ -7,12 +7,17 @@ import worker from "../worker/index.js";
 test("isolates access, persists shared review revisions and serves private media ranges", async () => {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("../drizzle/0000_workspace.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../drizzle/0001_members.sql", import.meta.url), "utf8"));
   const files = new Map();
   const env = {
     OWNER_EMAIL: "owner@example.com", REVIEWER_EMAILS: "reviewer@example.com", VIEWER_EMAILS: "viewer@example.com",
     DB: { prepare: (sql) => ({
       first: () => db.prepare(sql).get(),
-      bind: (...parameters) => ({ run: () => ({ meta: db.prepare(sql).run(...parameters) }) }),
+      all: () => ({ results: db.prepare(sql).all() }),
+      bind: (...parameters) => ({
+        first: () => db.prepare(sql).get(...parameters),
+        run: () => ({ meta: db.prepare(sql).run(...parameters) }),
+      }),
     }) },
     BUCKET: {
       put: (id, file) => files.set(id, file),
@@ -61,5 +66,22 @@ test("isolates access, persists shared review revisions and serves private media
   assert.equal(latest.state.selected["04"], version.id);
   assert.equal(latest.state.versions.at(-1).reviewedBy, "reviewer@example.com");
   assert.equal(latest.state.activity.length, 4);
+  const membership = (actor, email, role, caller = origin) => send("/api/members", actor, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: caller },
+    body: JSON.stringify({ email, role }),
+  });
+  assert.equal((await send("/api/members", "viewer")).status, 403);
+  assert.equal((await membership("reviewer", "outsider@example.com", "viewer")).status, 403);
+  assert.equal((await membership("owner", "outsider@example.com", "viewer", "https://other.example")).status, 403);
+  assert.equal((await membership("owner", "owner@example.com", "revoked")).status, 400);
+  assert.equal((await membership("owner", "outsider@example.com", "viewer")).status, 200);
+  assert.equal((await (await send("/api/state", "outsider")).json()).role, "viewer");
+  assert.equal((await action("outsider", 4, "pick", "04-doubao")).status, 403);
+  assert.equal((await membership("owner", "outsider@example.com", "reviewer")).status, 200);
+  assert.equal((await action("outsider", 4, "pick", "04-doubao")).status, 200);
+  assert.equal((await membership("owner", "outsider@example.com", "revoked")).status, 200);
+  assert.equal((await send("/api/state", "outsider")).status, 403);
+  assert.equal((await send(version.file, "outsider")).status, 403);
+  assert.deepEqual((await (await send("/api/members", "owner")).json()).members, []);
   db.close();
 });

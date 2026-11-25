@@ -11,7 +11,7 @@
 <body>
   <header class="masthead">
     <div class="brand"><span class="brand-icon" aria-hidden="true">▥</span><div><span class="project">《下一班车》</span><h1>团队审核</h1></div></div>
-    <div class="header-actions"><span id="storage" class="storage" role="status">正在打开审核记录…</span><button id="refresh-team" type="button">刷新团队记录</button><button id="export-review" type="button">导出审核记录</button></div>
+    <div class="header-actions"><span id="storage" class="storage" role="status">正在打开审核记录…</span><button id="open-members" type="button" hidden>邀请成员</button><button id="refresh-team" type="button">刷新团队记录</button><button id="export-review" type="button">导出审核记录</button></div>
   </header>
   <main class="layout">
     <nav class="rail" aria-label="镜头列表">
@@ -50,5 +50,21 @@
       <p id="preview-status" class="preview-status" aria-live="polite"></p>
     </aside>
   </main>
+  <dialog id="members-dialog" aria-labelledby="members-title">
+    <div class="section-head"><h2 id="members-title">邀请与管理成员</h2>
+      <form method="dialog"><button type="submit">关闭</button></form>
+    </div>
+    <p class="context">先为队友保存角色，再在此站点的「共享」设置中授权同一个邮箱。完成两步后，队友可以用该邮箱登录。</p>
+    <form id="member-form" class="member-form">
+      <label>ChatGPT 登录邮箱<input id="member-email" type="email" maxlength="254" required></label>
+      <label>角色<select id="member-role"><option value="reviewer">审核员</option><option value="viewer">只读成员</option></select></label>
+      <button id="save-member" type="submit">保存成员角色</button>
+    </form>
+    <p class="context">审核员可导入、审核和选版。只读成员可查看和播放。</p>
+    <p id="member-message" class="notice" role="status" hidden></p>
+    <div id="member-list" class="member-list"></div>
+    <button id="copy-invite" type="button">复制邀请说明</button>
+    <textarea id="invite-copy-fallback" rows="4" aria-label="邀请说明" readonly hidden></textarea>
+  </dialog>
 </body>
 </html>

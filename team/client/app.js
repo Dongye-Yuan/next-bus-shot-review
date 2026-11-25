@@ -42,6 +42,7 @@ async function refreshWorkspace() {
   const labels = { owner: "所有者", reviewer: "审核员", viewer: "只读成员" };
   $("storage").textContent = "团队共享 · " + labels[role];
   $("upload-label").hidden = role === "viewer";
+  $("open-members").hidden = role !== "owner";
   renderReview();
   if (!playing) seekTo(position);
 }
@@ -438,3 +439,79 @@ $("refresh-team").onclick = async () => {
   }
 };
 $("refresh-team").click();
+
+let managingMembers = false;
+const memberRoles = { reviewer: "审核员", viewer: "只读成员" };
+function memberMessage(value, error = false) {
+  const node = $("member-message");
+  node.textContent = value;
+  node.hidden = !value;
+  node.classList.toggle("error", error);
+}
+async function fetchMembers() {
+  const response = await fetch("/api/members", { cache: "no-store" });
+  if (!response.ok) throw new Error("无法读取成员，请重试。");
+  const data = await response.json();
+  const rows = data.members.map(({ email, role }) => {
+    const row = element("div", "", "member-row");
+    row.append(
+      element("span", email + " · " + memberRoles[role]),
+      button("修改角色", () => {
+        $("member-email").value = email;
+        $("member-role").value = role;
+        $("member-role").focus();
+      }),
+      button("撤销角色", () => {
+        if (window.confirm("撤销 " + email + " 的团队审核权限？")) saveMember(email, "revoked");
+      }),
+    );
+    return row;
+  });
+  $("member-list").replaceChildren(...rows);
+  if (!rows.length) $("member-list").append(element("p", "暂无通过此页面配置的成员。", "context"));
+}
+async function saveMember(email, role) {
+  if (managingMembers) return;
+  managingMembers = true;
+  $("save-member").disabled = true;
+  try {
+    const response = await fetch("/api/members", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, role }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message);
+    memberMessage(role === "revoked"
+      ? "审片权限已撤销。如需清理站点访问名单，也请从「共享」中移除此邮箱。"
+      : "角色已保存。请在站点「共享」中授权此邮箱，再发送邀请说明。");
+    await fetchMembers();
+  } catch (error) {
+    memberMessage(error.message, true);
+  } finally {
+    managingMembers = false;
+    $("save-member").disabled = false;
+  }
+}
+$("open-members").onclick = async () => {
+  $("members-dialog").showModal();
+  memberMessage("");
+  try { await fetchMembers(); }
+  catch (error) { memberMessage(error.message, true); }
+};
+$("member-form").onsubmit = (event) => {
+  event.preventDefault();
+  saveMember($("member-email").value, $("member-role").value);
+};
+$("copy-invite").onclick = async () => {
+  const message = "请用获邀的 ChatGPT 邮箱登录《下一班车》团队审核工作区：" + location.origin + "/";
+  try {
+    await navigator.clipboard.writeText(message);
+    memberMessage("邀请说明已复制。");
+  } catch {
+    const fallback = $("invite-copy-fallback");
+    fallback.value = message;
+    fallback.hidden = false;
+    fallback.select();
+  }
+};
