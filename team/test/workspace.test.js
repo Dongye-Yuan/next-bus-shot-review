@@ -160,3 +160,20 @@ test("keeps projects independent and preserves the legacy selection and revision
   const listing = await (await send("/api/projects", "viewer")).json();
   assert.deepEqual(new Set(listing.projects.map(({ id }) => id)), new Set(["demo", project.id, secondProject.id]));
 });
+
+test("moves a shot directly across the list and retains its selected version", async (t) => {
+  const { db, post, send } = fixture();
+  t.after(() => db.close());
+  const move = (input, role = "owner") => post("/api/shots", role, { kind: "move", ...input });
+  assert.equal((await move({ revision: 0, shot: "04", target: "01" }, "viewer")).status, 403);
+  assert.equal((await move({ revision: 0, shot: "04", target: "missing" })).status, 400);
+  const same = await (await move({ revision: 0, shot: "04", target: "04" })).json();
+  assert.equal(same.revision, 0);
+  assert.equal((await move({ revision: 0, shot: "04", target: "01" })).status, 200);
+  assert.equal((await move({ revision: 0, shot: "04", target: "03" })).status, 409);
+  const saved = await (await send("/api/state", "viewer")).json();
+  assert.deepEqual(saved.state.clips.map(({ id }) => id), ["04", "01", "02", "03"]);
+  assert.equal(saved.state.selected["04"], "04-doubao");
+  const movedBack = await (await move({ revision: 1, shot: "04", target: "03" })).json();
+  assert.deepEqual(movedBack.state.clips.map(({ id }) => id), ["01", "02", "03", "04"]);
+});

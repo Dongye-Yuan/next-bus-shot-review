@@ -112,12 +112,13 @@ async function manageShots(request, env, current, user) {
   if (input.kind !== "add" && index === -1) return fail("找不到该镜头。", 404);
   let shot;
   if (input.kind === "move") {
-    const next = index + input.direction;
-    if (![-1, 1].includes(input.direction) || next < 0 || next >= clips.length) {
-      return fail("该镜头无法移到这个位置。", 400);
-    }
-    shot = clips[index];
-    [clips[index], clips[next]] = [clips[next], shot];
+    const next = typeof input.target === "string" && input.direction === undefined
+      ? clips.findIndex((clip) => clip.id === input.target)
+      : input.target === undefined && [-1, 1].includes(input.direction) ? index + input.direction : -1;
+    if (next < 0 || next >= clips.length) return fail("该镜头无法移到这个位置。", 400);
+    if (next === index) return snapshot(current, user);
+    [shot] = clips.splice(index, 1);
+    clips.splice(next, 0, shot);
   } else {
     const title = typeof input.title === "string" ? input.title.trim() : "";
     const context = typeof input.context === "string" ? input.context.trim() : "";

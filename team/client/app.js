@@ -221,7 +221,55 @@ async function pickVersion(version, input) {
     notice("已选用「" + version.title + "」，预览已跳到该镜头。");
   }
 }
+function shotDragHandle(clip, index, row) {
+  const handle = element("span", "⠿", "shot-grip");
+  handle.title = "拖动调整镜头顺序";
+  handle.setAttribute("aria-hidden", "true");
+  let drag;
+  function clear() {
+    if (!drag) return;
+    drag.target?.removeAttribute("data-drop");
+    row.classList.remove("dragging");
+    drag = null;
+  }
+  function findTarget(event) {
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(".shot-row");
+    return target?.parentElement === $("shots") && target !== row ? target : null;
+  }
+  handle.onpointerdown = (event) => {
+    if (!event.isPrimary || event.button !== 0 || busy) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    drag = { id: event.pointerId, project: activeProject, revision, target: null };
+    row.classList.add("dragging");
+  };
+  handle.onpointermove = (event) => {
+    if (drag?.id !== event.pointerId) return;
+    const target = findTarget(event);
+    if (target === drag.target) return;
+    drag.target?.removeAttribute("data-drop");
+    if (target) {
+      const targetIndex = clips.findIndex(({ id }) => id === target.dataset.shot);
+      target.dataset.drop = targetIndex < index ? "before" : "after";
+    }
+    drag.target = target;
+  };
+  handle.onpointerup = async (event) => {
+    if (drag?.id !== event.pointerId) return;
+    const target = findTarget(event);
+    const current = drag.project === activeProject && drag.revision === revision;
+    clear();
+    if (current && target) await saveShotOrder({ shot: clip.id, target: target.dataset.shot });
+  };
+  handle.onpointercancel = clear;
+  handle.onlostpointercapture = clear;
+  return handle;
+}
+
 function renderReview() {
+  const canWrite = ready && role !== "viewer";
+  const canSort = canWrite && clips.length > 1;
+  $("shot-sort-hint").hidden = !canSort;
   $("shots").replaceChildren(...clips.map((clip, index) => {
     const node = button("", () => selectShot(clip.id), "shot-tab");
     const label = element("span");
@@ -229,11 +277,14 @@ function renderReview() {
     label.append(element("small", selectedVersion(clip.id) ? "已有选用版本" : "待选择版本"));
     node.append(label);
     node.setAttribute("aria-current", String(clip.id === state.openShot));
-    return node;
+    const row = element("div", "", "shot-row");
+    row.dataset.shot = clip.id;
+    row.append(node);
+    if (canSort) row.append(shotDragHandle(clip, index, row));
+    return row;
   }));
   const current = currentShot();
   const index = clips.indexOf(current);
-  const canWrite = ready && role !== "viewer";
   $("shot-count").textContent = String(clips.length);
   $("add-shot").hidden = !canWrite;
   $("upload-label").hidden = !canWrite || !current;
@@ -324,10 +375,13 @@ $("editor-form").onsubmit = async (event) => {
   if (kind === "add") selectShot(clips.at(-1).id);
   notice({ project: "已创建空白项目。", add: "已新增镜头。", edit: "已保存镜头设置并更新预览。" }[kind]);
 };
+async function saveShotOrder(move) {
+  if (!await commit({ kind: "move", ...move }, null, "/api/shots")) return false;
+  notice("镜头顺序和预览已更新。");
+  return true;
+}
 async function moveShot(direction, control) {
-  if (!currentShot()) return;
-  if (await commit({ kind: "move", shot: state.openShot, direction }, null, "/api/shots")) {
-    notice("镜头顺序和预览已更新。");
+  if (currentShot() && await saveShotOrder({ shot: state.openShot, direction })) {
     (control.disabled ? $("edit-shot") : control).focus();
   }
 }
