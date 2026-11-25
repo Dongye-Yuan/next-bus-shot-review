@@ -161,7 +161,7 @@ async function review(version, status, input) {
   }
   const next = {
     ...state,
-    versions: state.versions.map((entry) => entry.id === version.id ? { ...entry, status, note } : entry),
+    versions: state.versions.map((entry) => entry.id === version.id ? { ...entry, status, note, reviewedAt: new Date().toISOString() } : entry),
     selected: { ...state.selected },
   };
   const deselected = status === "rejected" && next.selected[version.shot] === version.id;
@@ -251,15 +251,21 @@ $("upload").addEventListener("change", async (event) => {
   }
 });
 
-const starts = [0, 4, 8, 12];
-const total = 17;
+let total = 0;
+const starts = clips.map(({ duration }) => {
+  const start = total;
+  total += duration;
+  return start;
+});
 const clipStart = (id) => starts[clips.findIndex((clip) => clip.id === id)];
+const video = $("preview-video");
 let position = 0;
 let playing = false;
 let displayed = "";
-let screenVideo;
-let frameRequest = 0;
-let lastTick;
+let run = 0;
+let timer;
+let stillStartedAt;
+let stillStartPosition;
 const clock = (seconds) => "00:" + String(Math.floor(seconds)).padStart(2, "0");
 
 function previewInfo() {
@@ -267,73 +273,100 @@ function previewInfo() {
   const clip = clips[index];
   return { clip, offset: position - starts[index], version: selectedVersion(clip.id) };
 }
+function playerMessage(message = "") {
+  $("player-message").textContent = message;
+  $("player-message").hidden = !message;
+}
 function updatePlayer() {
   const { clip, version } = previewInfo();
   $("seek").value = position;
   $("clock").textContent = clock(position) + " / " + clock(total);
   $("play").textContent = playing ? "Ⅱ 暂停" : "▶ 播放";
+  $("sound").textContent = video.muted ? "静音" : "有声";
+  $("sound").setAttribute("aria-pressed", String(!video.muted));
   const label = version ? clip.id + " · " + version.title : clip.id + " · 暂无选用版本";
   if ($("preview-status").textContent !== label) $("preview-status").textContent = label;
   for (const node of $("timeline").children) {
     node.setAttribute("aria-current", String(node.dataset.shot === clip.id));
   }
 }
-function syncVideo(offset) {
-  const video = screenVideo;
-  if (!video) return;
-  const apply = () => {
-    if (video !== screenVideo) return;
-    video.currentTime = Math.min(offset, video.duration);
-    if (playing && offset < video.duration) {
-      video.play().catch(() => {
-        stopPlayback();
-        notice("视频未能播放，请重试播放。", true);
-      });
-    }
-  };
-  if (video.readyState >= 1) apply();
-  else video.onloadedmetadata = apply;
-}
-function showPreview(force = false) {
-  const { clip, version, offset } = previewInfo();
+function showPreview() {
+  const { clip, version } = previewInfo();
   const key = clip.id + "/" + (version?.id ?? "");
-  if (force || key !== displayed) {
-    screenVideo?.pause();
+  if (key !== displayed) {
     displayed = key;
-    screenVideo = undefined;
-    if (version) {
-      const node = media(version);
-      $("screen").replaceChildren(node);
-      if (version.type === "video") {
-        screenVideo = node;
-        syncVideo(offset);
-      }
-    } else {
-      $("screen").replaceChildren(element("p", "此镜头还没有选用版本", "empty"));
+    video.pause();
+    video.onloadedmetadata = null;
+    const image = $("preview-image");
+    image.hidden = version?.type !== "image";
+    video.hidden = version?.type !== "video";
+    $("preview-empty").hidden = Boolean(version);
+    if (!image.hidden) {
+      image.alt = version.title;
+      image.src = clipSource(version);
+    }
+    if (!video.hidden) {
+      video.setAttribute("aria-label", version.title);
+      if (version.poster) video.poster = version.poster;
+      else video.removeAttribute("poster");
+      video.src = clipSource(version);
     }
   }
   updatePlayer();
 }
+function seekVideo(offset) {
+  const apply = () => {
+    video.currentTime = Math.min(offset, video.duration);
+  };
+  if (video.readyState >= 1) apply();
+  else video.onloadedmetadata = apply;
+}
 function stopPlayback() {
+  run++;
   playing = false;
-  cancelAnimationFrame(frameRequest);
-  screenVideo?.pause();
+  clearTimeout(timer);
+  video.pause();
   updatePlayer();
 }
 function seekTo(seconds) {
   stopPlayback();
-  position = seconds;
-  showPreview(true);
+  playerMessage();
+  position = Math.max(0, Math.min(total, seconds));
+  showPreview();
+  if (!video.hidden) seekVideo(previewInfo().offset);
 }
-function tick(now) {
+function playVideo(attempt) {
+  playerMessage("视频正在加载…");
+  seekVideo(previewInfo().offset);
+  const start = () => video.play();
+  start().catch((error) => {
+    if (attempt !== run || error.name === "AbortError") return;
+    if (error.name !== "NotAllowedError" || video.muted) throw error;
+    video.muted = true;
+    updatePlayer();
+    return start();
+  }).catch(() => {
+    if (attempt !== run) return;
+    stopPlayback();
+    playerMessage("浏览器未能开始播放。请点击播放重试。");
+  });
+}
+function beginClip() {
+  stillStartedAt = performance.now();
+  stillStartPosition = position;
+  if (!video.hidden) playVideo(run);
+  else playerMessage();
+}
+function tick() {
   if (!playing) return;
-  const { clip, offset } = previewInfo();
-  const elapsed = (now - lastTick) / 1000;
-  lastTick = now;
-  if (screenVideo && !screenVideo.ended && offset < (screenVideo.duration || Infinity)) {
-    position = clipStart(clip.id) + Math.min(clip.duration, screenVideo.currentTime);
+  const { clip } = previewInfo();
+  const start = clipStart(clip.id);
+  const end = start + clip.duration;
+  if (video.hidden) {
+    position = Math.min(end, stillStartPosition + (performance.now() - stillStartedAt) / 1000);
   } else {
-    position += elapsed;
+    position = video.ended ? end : Math.min(end, start + video.currentTime);
+    if (video.currentTime > 0 && video.readyState >= 3) playerMessage();
   }
   if (position >= total) {
     position = total;
@@ -341,21 +374,57 @@ function tick(now) {
     return;
   }
   showPreview();
-  frameRequest = requestAnimationFrame(tick);
+  if (position >= end) beginClip();
+  timer = setTimeout(tick, 80);
 }
+video.addEventListener("error", () => {
+  if (video.hidden) return;
+  stopPlayback();
+  playerMessage("预览视频加载失败。请点击播放重试，或检查素材能否打开。");
+});
+video.addEventListener("waiting", () => {
+  if (playing && !video.hidden) playerMessage("视频正在缓冲…");
+});
+video.addEventListener("playing", () => {
+  if (playing && !video.hidden) playerMessage();
+});
 $("play").onclick = () => {
   if (playing) {
     stopPlayback();
+    playerMessage();
     return;
   }
-  document.querySelectorAll("#versions video").forEach((video) => video.pause());
+  document.querySelectorAll("#versions video").forEach((version) => version.pause());
   if (position >= total) position = 0;
   playing = true;
-  lastTick = performance.now();
-  showPreview(true);
-  frameRequest = requestAnimationFrame(tick);
+  showPreview();
+  if (!video.hidden && video.error) video.load();
+  beginClip();
+  timer = setTimeout(tick, 80);
 };
+$("sound").onclick = () => {
+  video.muted = !video.muted;
+  updatePlayer();
+};
+$("seek").max = total;
 $("seek").oninput = (event) => seekTo(Number(event.target.value));
+$("export-review").onclick = () => {
+  const report = {
+    project: "下一班车",
+    exportedAt: new Date().toISOString(),
+    shots: clips.map(({ id, title, duration }) => ({
+      id, title, duration, selectedVersion: state.selected[id] ?? null,
+      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt }) => ({
+        id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null,
+      })),
+    })),
+  };
+  const link = element("a");
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+  link.download = "next-bus-review.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+};
 $("timeline").replaceChildren(...clips.map((clip, index) => {
   const node = button("", () => seekTo(starts[index]));
   node.dataset.shot = clip.id;
