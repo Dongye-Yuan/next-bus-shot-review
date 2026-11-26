@@ -623,3 +623,41 @@ test("can confirm a substitute keyframe without changing approved history or sel
   assert.equal(state.selected[shot], "03-fixed");
   assert.equal(state.versions.find(({ id }) => id === "03-fixed").status, "approved");
 });
+
+test("imports timed findings only for the package target and original role bindings", async (t) => {
+  const { db, send, post, origin } = fixture();
+  t.after(() => db.close());
+  const upload = new FormData();
+  for (const [key, value] of Object.entries({ revision: "0", name: "许棠", identity: "本人右侧黄色发夹", outfit: "米白雨衣" })) {
+    upload.set(key, value);
+  }
+  for (const angle of ["front", "side", "full"]) {
+    upload.set(angle, new File(["reference"], angle + ".jpg", { type: "image/jpeg" }));
+  }
+  const added = await (await send("/api/references", "owner", { method: "POST", headers: { Origin: origin }, body: upload })).json();
+  const { id } = added.state.production.references[0];
+  const update = (action, role = "owner") => post("/api/production", role, action);
+  await update({ revision: 1, kind: "confirmReference", reference: id });
+  await update({ revision: 2, kind: "bindReferences", shot: "04", references: [{ reference: id, angle: "front" }] });
+  const target = { project: "demo", shot: "04", version: "04-failed" };
+  const report = {
+    format: "shot-consistency-result-v1", target, references: [{ id, angle: "front" }],
+    times: [0, 1.98, 3.97, 5.95, 7.3], model: "gemini-fixture", runAt: "2026-11-26T00:00:00Z",
+    findings: [
+      { reference: id, frame: 2, feature: "发型", outcome: "problem", note: "刘海轮廓出现变化。" },
+      { reference: id, frame: 3, feature: "标志性特征", outcome: "unclear", note: "伞沿遮挡发夹。" },
+    ],
+  };
+  const action = { kind: "importPackageCheck", shot: target.shot, version: target.version, report, revision: 3 };
+  assert.equal((await update(action, "viewer")).status, 403);
+  assert.equal((await update({ ...action, report: { ...report, target: { ...target, version: "04-flow" } } })).status, 400);
+  assert.equal((await update({ ...action, report: { ...report, references: [{ id, angle: "side" }] } })).status, 400);
+  const result = await (await update(action)).json();
+  assert.equal(result.revision, 4);
+  const state = (await (await send("/api/state", "reviewer")).json()).state;
+  const version = state.versions.find(({ id }) => id === target.version);
+  assert.equal(version.status, "pending");
+  assert.deepEqual(version.packageCheck.findings.map(({ time, outcome, angle }) => [time, outcome, angle]),
+    [[3.97, "problem", "front"], [5.95, "unclear", "front"]]);
+  assert.equal(state.selected["04"], "04-doubao");
+});

@@ -1,4 +1,4 @@
-import { castNames, normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit, boardColumns, scriptColumns, draftBoardOptions, settingDraft, normalizeSettings, settingFields, qualityCategories, qualityOutcomes, repairFindings } from "../client/board-data.js";
+import { castNames, normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit, boardColumns, scriptColumns, draftBoardOptions, settingDraft, normalizeSettings, settingFields, qualityCategories, qualityOutcomes, repairFindings, packageResultFormat, packageFeatures } from "../client/board-data.js";
 
 const demoClips = [
   { id: "01", title: "雨夜站棚", duration: 4, context: "双人中景，建立站棚与人物站位。" },
@@ -581,6 +581,42 @@ function recordColabCheck(current, version, input, user) {
   };
 }
 
+function recordPackageCheck(current, version, report, user) {
+  const { target, times, references, findings, model, runAt } = report ?? {};
+  if (report?.format !== packageResultFormat || target?.project !== current.project ||
+      target.shot !== version.shot || target.version !== version.id) {
+    return "此报告不属于当前项目、镜头和素材版本。";
+  }
+  if (typeof model !== "string" || !/^gemini-[a-zA-Z0-9.-]{1,95}$/.test(model) ||
+      typeof runAt !== "string" || runAt.length > 40 || !Number.isFinite(Date.parse(runAt)) ||
+      !Array.isArray(times) || (version.type === "image" ? times.length !== 1 : times.length !== 5) ||
+      times[0] !== 0 || times.some((time, index) => !Number.isFinite(time) || time < 0 || time > 300 || (index && time < times[index - 1])) ||
+      !Array.isArray(findings) || findings.length > 12) {
+    return "请核对检查包报告的模型、运行日期、抽帧时间和结果。";
+  }
+  const bound = assignedReferences(current, version.shot);
+  const key = ({ ref, angle }) => ref.id + ":" + angle;
+  const expected = new Set(bound.map(key));
+  if (!expected.size || !Array.isArray(references) || references.length !== expected.size ||
+      new Set(references.map((row) => row?.id + ":" + row?.angle)).size !== expected.size ||
+      references.some((row) => !expected.has(row?.id + ":" + row?.angle))) {
+    return "镜头的角色参考或视角已变更，请重新导出检查包。";
+  }
+  const rows = [];
+  for (const item of findings) {
+    if (!Number.isInteger(item?.frame) || times[item.frame] === undefined ||
+        !packageFeatures.includes(item.feature) || !["problem", "unclear"].includes(item.outcome) ||
+        typeof item.note !== "string" || item.note.length > 250) {
+      return "报告包含无效的结果或证据帧。";
+    }
+    const row = validatedIssue(current, version, { ...item, time: times[item.frame] });
+    if (!row) return "报告包含未绑定的角色或缺少画面依据。";
+    rows.push({ ...row, outcome: item.outcome });
+  }
+  version.packageCheck = { model, runAt: new Date(runAt).toISOString(), times, findings: rows,
+    importedAt: new Date().toISOString(), importedBy: user.email };
+}
+
 async function editProduction(request, env, current, user) {
   const input = await request.json();
   if (input?.revision !== current.revision) return saveError(409);
@@ -645,6 +681,10 @@ async function editProduction(request, env, current, user) {
       id: crypto.randomUUID(), category, outcome, time, note, ...(outcome === "problem" ? { fix } : {}),
       ...(ref ? { reference: ref.ref.id, angle: ref.angle } : {}), at: new Date().toISOString(), by: user.email,
     });
+  } else if (input.kind === "importPackageCheck") {
+    if (version?.shot !== clip.id) return fail("找不到该镜头的素材版本。", 404);
+    const problem = recordPackageCheck(current, version, input.report, user);
+    if (problem) return fail(problem, 400);
   } else if (input.kind === "importColabCheck") {
     if (version?.shot !== clip.id) return fail("找不到该镜头的素材版本。", 404);
     const problem = recordColabCheck(current, version, input, user);
@@ -923,9 +963,9 @@ export default {
       const user = await identity(request, env);
       if (!user) return fail("此团队工作区仅供已授权的成员访问。", 403);
       const { pathname } = url;
-      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/production.js", "/shot-prompt.js", "/board-data.js", "/storyboard.js", "/style.css"].includes(pathname)) {
+      if (request.method === "GET" && ["/", "/app.js", "/movie.js", "/production.js", "/shot-prompt.js", "/board-data.js", "/storyboard.js", "/style.css", "/consistency-check.ipynb"].includes(pathname)) {
         const key = pathname === "/" ? "index.html" : pathname.slice(1);
-        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "production.js": "text/javascript", "shot-prompt.js": "text/javascript", "board-data.js": "text/javascript", "storyboard.js": "text/javascript", "style.css": "text/css" }[key];
+        const type = { "index.html": "text/html", "app.js": "text/javascript", "movie.js": "text/javascript", "production.js": "text/javascript", "shot-prompt.js": "text/javascript", "board-data.js": "text/javascript", "storyboard.js": "text/javascript", "style.css": "text/css", "consistency-check.ipynb": "application/x-ipynb+json" }[key];
         return new Response(assets[key], { headers: { ...headers, "Content-Type": type + "; charset=utf-8" } });
       }
       if (pathname === "/api/members") return await members(request, env, user, url);

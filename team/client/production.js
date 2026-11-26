@@ -1,4 +1,4 @@
-import { castNames, settingDraft, settingFields, locationDescription, normalizeSettings, qualityCategories, qualityOutcomes, repairFindings } from "./board-data.js";
+import { castNames, settingDraft, settingFields, locationDescription, normalizeSettings, qualityCategories, qualityOutcomes, repairFindings, packageInputFormat, packageResultFormat } from "./board-data.js";
 import { angles, shotPrompt } from "./shot-prompt.js";
 const features = ["脸型", "发型", "标志性特征", "服装", "其他"];
 const imageTypes = "image/jpeg,image/png,image/webp";
@@ -768,6 +768,50 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     content.append(start);
   }
 
+  function checkPackage(version, shot) {
+    open("导出检查包");
+    const references = bindings(version.shot).map(({ reference, angle }) => ({ ref: findRef(reference), angle }))
+      .filter(({ ref, angle }) => ref?.confirmedAt && ref.images[angle]);
+    const target = { project: context().project, shot: version.shot, version: version.id };
+    content.append(element("p", shot.title + " · " + version.title));
+    content.append(element("p", "浏览器会打包" + (version.type === "video" ? "5 张抽帧及其时间点" : "当前关键帧") +
+      "、已绑定的角色参考和设定。导出在本机完成。", "context"));
+    const notebook = element("a", "下载 Colab 检查笔记本", "button");
+    notebook.href = "/consistency-check.ipynb";
+    notebook.download = "consistency-check.ipynb";
+    const download = button("下载检查包 JSON", async () => {
+      download.disabled = true;
+      $("production-close").disabled = true;
+      message("正在准备素材…");
+      try {
+        const frames = await sampledFrames(version);
+        const roles = [];
+        for (const { ref, angle } of references) {
+          const [{ image }] = await sampledFrames({ type: "image", file: ref.images[angle].file });
+          roles.push({ id: ref.id, name: ref.name, edition: ref.edition, angle, identity: ref.identity, outfit: ref.outfit, image });
+        }
+        const packet = { format: packageInputFormat, target, title: version.title, type: version.type, references: roles, frames };
+        const url = URL.createObjectURL(new Blob([JSON.stringify(packet)], { type: "application/json" }));
+        const link = element("a");
+        link.href = url;
+        link.download = "检查包-" + version.title.slice(0, 60).replace(/[<>:"/\\|?*]/g, "_") + ".json";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        message("检查包已下载。用笔记本检查后，在这个版本导入结果。");
+      } catch (error) {
+        message(error.message || "导出失败，请检查素材能否播放。", true);
+      } finally {
+        download.disabled = false;
+        $("production-close").disabled = false;
+      }
+    }, "pick");
+    download.disabled = !references.length;
+    if (!references.length) content.append(element("p", "请先绑定已确认的角色参考。", "context"));
+    const actions = element("div", "", "actions");
+    actions.append(download, notebook);
+    content.append(actions);
+  }
+
   function importColab(version) {
     open("导入 Colab 检查结果");
     const form = element("form", "", "production-form");
@@ -779,10 +823,11 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     save.type = "submit";
     save.disabled = true;
     let report;
+    let packet;
     let samples = new Map();
     const target = "镜头 " + version.shot + " · " + version.title + " · 版本 ID " + version.id;
     content.append(element("p", target, "context"),
-      element("p", "请选择与此版本相同的样片。样片编号来自 Colab，导入前请核对对应关系。", "context"));
+      element("p", "检查包报告会自动核对项目、镜头与版本。旧版验收报告需手动选择对应样片。", "context"));
     form.append(fileLabel, sampleLabel, preview, save);
     content.append(form);
 
@@ -805,6 +850,9 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     file.onchange = async () => {
       const local = file.files[0];
       report = null;
+      packet = null;
+      sampleLabel.hidden = false;
+      sample.required = true;
       samples = new Map();
       sample.replaceChildren(new Option("请选择样片", ""));
       sample.onchange();
@@ -813,6 +861,22 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         if (local.size > 128 * 1024) throw new Error("请选择不超过 128 KB 的检查结果 JSON。");
         const data = JSON.parse((await local.text()).replace(/^\uFEFF/, ""));
         if (file.files[0] !== local) return;
+        if (data?.format === packageResultFormat) {
+          const { target, findings, times } = data;
+          if (target?.project !== context().project || target.shot !== version.shot || target.version !== version.id) {
+            throw new Error("此报告不属于当前项目、镜头和素材版本。");
+          }
+          if (!Array.isArray(findings) || !Array.isArray(times) || times.length !== (version.type === "video" ? 5 : 1) ||
+              times.some((time) => !Number.isFinite(time) || time < 0 || time > 300)) {
+            throw new Error("检查包报告缺少有效的抽帧或结果。");
+          }
+          packet = data;
+          sampleLabel.hidden = true;
+          sample.required = false;
+          save.disabled = false;
+          preview.textContent = "已匹配此版本 · " + packageSummary(data);
+          return;
+        }
         const cases = new Map();
         for (const [group, label] of [["development", "调试组"], ["holdout", "验收组"]]) {
           const rows = data?.[group];
@@ -837,7 +901,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     form.onsubmit = async (event) => {
       event.preventDefault();
       const row = selected();
-      if (save.disabled || !row) return;
+      if (save.disabled || (!row && !packet)) return;
       save.disabled = true;
       file.disabled = true;
       sample.disabled = true;
@@ -847,13 +911,19 @@ export function setupProduction({ $, element, button, context, commit, modelSett
           const video = element("video");
           video.preload = "metadata";
           await waitFor(video, "loadedmetadata", () => { video.src = version.file; });
-          if (!Number.isFinite(video.duration) || row.time >= video.duration) {
+          const inRange = packet ? packet.times.every((time) => time <= video.duration + 0.005) : row.time < video.duration;
+          if (!Number.isFinite(video.duration) || !inRange) {
             throw new Error("问题帧时间超出此视频时长，请核对样片与素材版本。");
           }
         }
-        const { label, ...data } = row;
-        await run({ kind: "importColabCheck", shot: version.shot, version: version.id, ...data },
-          null, "/api/production", () => dialog.close());
+        if (packet) {
+          await run({ kind: "importPackageCheck", shot: version.shot, version: version.id, report: packet },
+            null, "/api/production", () => dialog.close());
+        } else {
+          const { label, ...data } = row;
+          await run({ kind: "importColabCheck", shot: version.shot, version: version.id, ...data },
+            null, "/api/production", () => dialog.close());
+        }
       } catch (error) {
         message(error.message, true);
       } finally {
@@ -903,6 +973,23 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     return section;
   }
 
+  function packageSummary({ times, findings }) {
+    const problems = findings.filter((row) => row?.outcome === "problem").length;
+    const pending = findings.filter((row) => row?.outcome === "unclear").length;
+    const result = [problems && problems + " 条疑似偏差", pending && pending + " 条无法判断"].filter(Boolean);
+    return "抽检 " + times.length + " 帧 · " + (result.length ? result.join(" · ") : "未见明显偏差");
+  }
+
+  function packageFinding(version, finding, container) {
+    const pending = finding.outcome === "unclear";
+    const time = version.type === "video" ? finding.time + " 秒" : "关键帧";
+    const role = findRef(finding.reference)?.name ?? "角色";
+    container.append(button(role + " · " + time + " · " + finding.feature + " · " +
+      (pending ? "无法判断" : "疑似偏差") + "（检查包）", () => compare(version, finding, pending)),
+      element("p", finding.note, "context"));
+    return container;
+  }
+
   function unclearLabel(version, finding) {
     const location = version.type === "video" ? finding.time + " 秒" : "关键帧";
     return (findRef(finding.reference)?.name ?? "角色") + " · " + location + " · " + finding.feature + " · AI 无法判断";
@@ -925,6 +1012,9 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         item.append(button((findRef(issue.reference)?.name ?? "角色") + " · " + issue.feature + location(issue.time),
           () => compare(version, issue)), element("p", issue.note, "context"));
         findings.append(item);
+      }
+      for (const finding of version.packageCheck?.findings ?? []) {
+        findings.append(packageFinding(version, finding, element("li")));
       }
       for (const finding of version.visionUnclear ?? []) {
         const item = element("li");
@@ -1067,6 +1157,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       actions.append(button("复核镜头质量", () => qualityForm(version)));
       if (bindings(shot.id).length) {
         actions.append(button("标记问题", () => issueForm(version)));
+        actions.append(button("导出检查包", () => checkPackage(version, shot)));
         if (context().capabilities.vision) actions.append(button("一致性检查", () => inspect(version)));
       }
       actions.append(button("导入 Colab 检查结果", () => importColab(version)));
@@ -1101,6 +1192,13 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       const details = element("div", "", "issue-summary");
       details.append(button(unclearLabel(version, finding), () => compare(version, finding, true)), element("p", finding.note, "context"));
       section.append(details);
+    }
+    if (version.packageCheck) {
+      const check = version.packageCheck;
+      section.append(element("p", "Colab 检查包 · " + check.model + " · " + packageSummary(check), "context"));
+      for (const finding of check.findings) {
+        section.append(packageFinding(version, finding, element("div", "", "issue-summary")));
+      }
     }
     const checklist = version.repairPlan ?? version.repairOrigin;
     if (checklist?.checks.length) {

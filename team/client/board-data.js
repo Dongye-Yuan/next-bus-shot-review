@@ -385,6 +385,10 @@ export function locationDescription(location) {
     .map(({ key, title }) => title + "：" + location[key].trim()).join("\n");
 }
 
+export const packageInputFormat = "shot-consistency-package-v1";
+export const packageResultFormat = "shot-consistency-result-v1";
+export const packageFeatures = ["脸型", "发型", "标志性特征", "服装"];
+
 export const qualityCategories = {
   identity: "角色一致性", action: "动作", props: "道具", occlusion: "遮挡", continuity: "场景与衔接", other: "其他",
 };
@@ -393,7 +397,8 @@ export const qualityOutcomes = { pass: "未见异常", problem: "发现问题", 
 export function repairFindings(version) {
   if (!version) return [];
   const checks = version.repairPlan?.checks ?? (version.qualityChecks ?? []).filter(({ outcome }) => outcome === "problem");
-  return [...(version.issues ?? []), ...checks].map((item) => {
+  const importedProblems = (version.packageCheck?.findings ?? []).filter(({ outcome }) => outcome === "problem");
+  return [...(version.issues ?? []), ...importedProblems, ...checks].map((item) => {
     const time = version.type === "video" && Number.isFinite(item.time) ? item.time + " 秒：" : "";
     return time + (qualityCategories[item.category] ?? item.feature) + " · " + item.note +
       (item.fix ? (/[。！？.!?]$/.test(item.note) ? " " : "。") + "修改要求：" + item.fix : "");

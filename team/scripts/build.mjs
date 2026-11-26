@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const read = (path) => readFile(root + path, "utf8");
 const files = Object.fromEntries(await Promise.all(
-  ["index.html", "app.js", "movie.js", "production.js", "shot-prompt.js", "board-data.js", "storyboard.js", "style.css"].map(async (name) => [name, await read("client/" + name)]),
+  ["index.html", "app.js", "movie.js", "production.js", "shot-prompt.js", "board-data.js", "storyboard.js", "style.css", "consistency-check.ipynb"].map(async (name) => [name, await read("client/" + name)]),
 ));
 await mkdir(root + "dist/server", { recursive: true });
 await mkdir(root + "dist/.openai", { recursive: true });
