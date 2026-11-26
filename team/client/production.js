@@ -431,6 +431,103 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     content.append(start);
   }
 
+  function importColab(version) {
+    open("导入 Colab 检查结果");
+    const form = element("form", "", "production-form");
+    const [fileLabel, file] = field("Colab 导出的 JSON", "input", { type: "file", accept: ".json,application/json", required: true });
+    const [sampleLabel, sample] = select("对应的 Colab 样片", [["", "请选择样片"]]);
+    sample.required = true;
+    const preview = element("p", "", "context");
+    const save = element("button", "确认导入", "pick");
+    save.type = "submit";
+    save.disabled = true;
+    let report;
+    let samples = new Map();
+    const target = "镜头 " + version.shot + " · " + version.title + " · 版本 ID " + version.id;
+    content.append(element("p", target, "context"),
+      element("p", "请选择与此版本相同的样片。样片编号来自 Colab，导入前请核对对应关系。", "context"));
+    form.append(fileLabel, sampleLabel, preview, save);
+    content.append(form);
+
+    function selected() {
+      const row = samples.get(sample.value);
+      if (!row) return null;
+      const time = version.type === "image" ? 0 : report.source_times_seconds?.[row.sample];
+      return { ...row, time };
+    }
+    sample.onchange = () => {
+      const row = selected();
+      const validTime = row && Number.isFinite(row.time) && row.time >= 0 && row.time <= 300;
+      save.disabled = !validTime;
+      message();
+      preview.textContent = !row ? "" : !validTime ? "视频样片缺少有效的原视频时间，无法导入。" :
+        (row.error !== undefined ? "检查未完成 · " + row.error :
+          row.issues.length ? row.issues.length + " 条 AI 提示" : "此样片未发现问题") +
+        " · " + (version.type === "image" ? "关键帧" : row.time + " 秒") + " · " + row.model;
+    };
+    file.onchange = async () => {
+      const local = file.files[0];
+      report = null;
+      samples = new Map();
+      sample.replaceChildren(new Option("请选择样片", ""));
+      sample.onchange();
+      if (!local) return;
+      try {
+        if (local.size > 128 * 1024) throw new Error("请选择不超过 128 KB 的检查结果 JSON。");
+        const data = JSON.parse((await local.text()).replace(/^\uFEFF/, ""));
+        if (file.files[0] !== local) return;
+        const cases = new Map();
+        for (const [group, label] of [["development", "调试组"], ["holdout", "验收组"]]) {
+          const rows = data?.[group];
+          if (!rows || typeof rows !== "object" || Array.isArray(rows)) continue;
+          for (const [id, result] of Object.entries(rows)) {
+            if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id) ||
+                (!Array.isArray(result?.issues) && typeof result?.error !== "string")) continue;
+            cases.set(group + ":" + id, { sample: id, group, label, model: result.reported_model ?? data.model,
+              runAt: data.run_at_utc, issues: result.issues, error: result.error });
+          }
+        }
+        if (!cases.size || typeof data.model !== "string" || !Number.isFinite(Date.parse(data.run_at_utc))) {
+          throw new Error("找不到 Colab 报告的模型、运行时间或样片记录。");
+        }
+        report = data;
+        samples = cases;
+        for (const [key, row] of cases) sample.add(new Option(row.sample + " · " + row.label, key));
+      } catch (error) {
+        if (file.files[0] === local) message(error instanceof SyntaxError ? "无法读取 JSON，请选择 Colab 导出的检查结果。" : error.message, true);
+      }
+    };
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const row = selected();
+      if (save.disabled || !row) return;
+      save.disabled = true;
+      file.disabled = true;
+      sample.disabled = true;
+      $("production-close").disabled = true;
+      try {
+        if (version.type === "video") {
+          const video = element("video");
+          video.preload = "metadata";
+          await waitFor(video, "loadedmetadata", () => { video.src = version.file; });
+          if (!Number.isFinite(video.duration) || row.time >= video.duration) {
+            throw new Error("问题帧时间超出此视频时长，请核对样片与素材版本。");
+          }
+        }
+        const { label, ...data } = row;
+        await run({ kind: "importColabCheck", shot: version.shot, version: version.id, ...data },
+          null, "/api/production", () => dialog.close());
+      } catch (error) {
+        message(error.message, true);
+      } finally {
+        file.disabled = false;
+        sample.disabled = false;
+        save.disabled = false;
+        $("production-close").disabled = false;
+      }
+    };
+  }
+
   function renderShot(shot, ready) {
     $("project-references").hidden = !ready;
     $("shot-production").hidden = !shot;
@@ -468,6 +565,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
         actions.append(button("标记问题", () => issueForm(version)));
         if (context().capabilities.vision) actions.append(button("一致性检查", () => inspect(version)));
       }
+      actions.append(button("导入 Colab 检查结果", () => importColab(version)));
       if (version.status === "rejected") actions.append(button("发起返工", () => preparation(shot, version.type, version), "pick"));
     }
     section.append(actions);
@@ -476,10 +574,18 @@ export function setupProduction({ $, element, button, context, commit, checkFile
       section.append(element("p", "AI 已抽检 " + version.checkedFrames + " 帧。" +
         (flagged ? "请复核下方提示。" : "抽检未发现明显偏差，请按需人工复核。"), "context"));
     }
+    if (version.colabCheck) {
+      const check = version.colabCheck;
+      const flagged = (version.issues ?? []).some(({ source }) => source === "colab");
+      const status = check.status === "failed" ? "检查未完成 · " + check.error + (flagged ? "。下方仍显示此前成功导入的提示。" : "") :
+        flagged ? "请复核下方 AI 提示。" : "此样片未发现问题。";
+      section.append(element("p", "Colab · " + check.sample + " · " + check.model + " · " + status, "context"));
+    }
     for (const issue of version.issues ?? []) {
       const ref = findRef(issue.reference);
       const label = (ref?.name ?? "角色") + " · " + (version.type === "video" ? issue.time + " 秒" : "关键帧") +
-        " · " + issue.feature + (issue.source === "vision" ? " · AI 提示" : " · 人工");
+        " · " + issue.feature +
+        (issue.source === "colab" ? " · AI 提示（Colab）" : issue.source === "vision" ? " · AI 提示" : " · 人工");
       const details = element("div", "", "issue-summary");
       details.append(button(label, () => compare(version, issue)), element("p", issue.note, "context"));
       section.append(details);

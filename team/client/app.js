@@ -312,7 +312,7 @@ function renderReview() {
     review: "审核", pick: "选用", import: "导入",
     createProject: "新建项目", addShot: "新增镜头", editShot: "编辑镜头", moveShot: "调整镜头顺序",
     addReference: "新增角色参考", confirmReference: "确认角色参考", bindReferences: "绑定角色参考",
-    lockFrame: "确认关键帧", addIssue: "标记问题", checkConsistency: "AI 一致性检查",
+    lockFrame: "确认关键帧", addIssue: "标记问题", checkConsistency: "AI 一致性检查", importColabCheck: "导入 Colab 检查",
     saveStory: "保存故事原文", saveScript: "保存剧本草稿", confirmScript: "确认剧本", saveStoryboard: "保存分镜草稿", confirmStoryboard: "确认分镜并建镜",
     startGeneration: "发起生成", generationReceipt: "保存任务回执", generationProgress: "更新生成状态", generationComplete: "导入生成结果",
   };
@@ -741,9 +741,9 @@ $("export-review").onclick = () => {
     activity: state.activity,
     shots: clips.map(({ id, title, duration, context, storyboard }, index) => ({
       id, title, duration, context, storyboard, start: starts[index], selectedVersion: state.selected[id] ?? null,
-      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, issues, replaces, keyframe }) => ({
+      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, colabCheck, issues, replaces, keyframe }) => ({
         id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null, reviewedBy: reviewedBy ?? null,
-        checkedAt, checkedFrames, issues, replaces, keyframe,
+        checkedAt, checkedFrames, colabCheck, issues, replaces, keyframe,
       })),
     })),
   };

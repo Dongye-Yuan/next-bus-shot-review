@@ -298,6 +298,64 @@ test("locks references, preserves evidence and collects the queued repair as a s
   assert.equal(manual.state.versions.find(({ id }) => id === "03-old").status, "rejected");
 });
 
+test("imports a Colab sample into one version without changing review or manual evidence", async (t) => {
+  const { db, send, post, origin } = fixture();
+  t.after(() => db.close());
+  const form = new FormData();
+  for (const [key, value] of Object.entries({ revision: "0", name: "许棠", identity: "本人右侧黄色发夹", outfit: "米白雨衣" })) form.set(key, value);
+  for (const angle of ["front", "side", "full"]) form.set(angle, new File(["reference"], angle + ".png", { type: "image/png" }));
+  const referenceReply = await send("/api/references", "owner", { method: "POST", headers: { Origin: origin }, body: form });
+  assert.equal(referenceReply.status, 200);
+  const ref = (await referenceReply.json()).state.production.references[0];
+  let revision = 1;
+  async function change(path, body) {
+    const response = await post(path, "owner", { ...body, revision });
+    assert.equal(response.status, 200);
+    const next = await response.json();
+    revision = next.revision;
+    return next.state;
+  }
+  await change("/api/production", { kind: "confirmReference", reference: ref.id });
+  await change("/api/production", { kind: "bindReferences", shot: "03", references: [{ reference: ref.id, angle: "side" }] });
+  await change("/api/production", { kind: "addIssue", shot: "03", version: "03-old", reference: ref.id,
+    feature: "标志性特征", note: "人工发现发夹错侧" });
+  await change("/api/review", { kind: "review", version: "03-old", status: "rejected", note: "发夹错侧" });
+  const report = { kind: "importColabCheck", shot: "03", version: "03-old", model: "gemini-3.5-flash-lite",
+    runAt: "2026-11-26T02:48:15.922467+00:00", group: "development", sample: "D01", time: 0, issues: [] };
+  const variant = (payload, role = "owner") => post("/api/production", role, { ...report, revision, ...payload });
+  assert.equal((await variant({}, "viewer")).status, 403);
+  assert.equal((await variant({ revision: revision - 1 })).status, 409);
+  assert.equal((await variant({ shot: "04" })).status, 404);
+  assert.equal((await variant({ time: 2.5 })).status, 400);
+  const missed = await change("/api/production", report);
+  const old = missed.versions.find(({ id }) => id === "03-old");
+  assert.equal(old.status, "rejected");
+  assert.equal(old.colabCheck.status, "completed");
+  assert.deepEqual(old.issues.map(({ source }) => source), ["manual"]);
+  assert.equal(missed.selected["03"], "03-fixed");
+  assert.equal(missed.versions.find(({ id }) => id === "03-fixed").colabCheck, undefined);
+
+  const hit = { ...report, sample: "H06", group: "holdout",
+    issues: [{ character: "许棠", feature: "黄色发夹", observed_side: "左", note: "画面中黄色发夹在本人左侧" }] };
+  assert.equal((await variant({ ...hit, issues: [{ ...hit.issues[0], character: "未绑定角色" }] })).status, 400);
+  const hitState = await change("/api/production", hit);
+  const stored = hitState.versions.find(({ id }) => id === "03-old").issues.at(-1);
+  assert.deepEqual({ source: stored.source, reference: stored.reference, angle: stored.angle, time: stored.time,
+    sample: stored.sample, side: stored.observedSide },
+  { source: "colab", reference: ref.id, angle: "side", time: 0, sample: "H06", side: "左" });
+  assert.equal((await send(ref.images[stored.angle].file, "viewer")).status, 200);
+  const errored = await change("/api/production", { ...report, issues: undefined, error: "HTTP 429" });
+  const failed = errored.versions.find(({ id }) => id === "03-old");
+  assert.equal(failed.colabCheck.status, "failed");
+  assert.equal(failed.colabCheck.error, "HTTP 429");
+  assert.deepEqual(failed.issues.map(({ source }) => source), ["manual", "colab"]);
+  const refetched = await (await send("/api/state", "owner")).json();
+  assert.equal(refetched.state.selected["03"], "03-fixed");
+  assert.equal(refetched.state.versions.find(({ id }) => id === "03-old").status, "rejected");
+  const replaced = await change("/api/production", report);
+  assert.deepEqual(replaced.versions.find(({ id }) => id === "03-old").issues.map(({ source }) => source), ["manual"]);
+});
+
 test("saves story and draft separately and confirms ordered shots once", async (t) => {
   const { db, send, post } = fixture();
   t.after(() => db.close());

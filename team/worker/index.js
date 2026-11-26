@@ -405,6 +405,42 @@ function validatedIssue(current, version, data) {
   return { id: crypto.randomUUID(), reference: ref.ref.id, angle: ref.angle, feature, note, time };
 }
 
+function recordColabCheck(current, version, input, user) {
+  const { sample, group, model, runAt, time, issues, error } = input;
+  if (typeof sample !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(sample) ||
+      !["development", "holdout"].includes(group) || typeof model !== "string" ||
+      !/^gemini-[a-zA-Z0-9.-]{1,95}$/.test(model) || typeof runAt !== "string" ||
+      runAt.length > 40 || !Number.isFinite(Date.parse(runAt)) ||
+      !Number.isFinite(time) || time < 0 || time > 300 || (version.type === "image" && time !== 0)) {
+    return "请检查样片编号、模型、运行日期与问题帧时间。";
+  }
+  const status = error === undefined ? "completed" : "failed";
+  if (status === "failed") {
+    if (typeof error !== "string" || !error.trim() || error.length > 160 || issues !== undefined) {
+      return "检查失败记录须包含错误说明。";
+    }
+  } else {
+    if (!Array.isArray(issues) || issues.length > 24) return "检查结果必须包含有效的问题列表。";
+    const refs = assignedReferences(current, version.shot);
+    const found = [];
+    for (const item of issues) {
+      if (!item || !["黄色发夹", "眉尾浅疤"].includes(item.feature) ||
+          !["左", "右"].includes(item.observed_side) || typeof item.note !== "string" ||
+          item.note.length > 400) return "问题记录须包含有效的检查项、实际侧别和画面依据。";
+      const match = refs.find(({ ref }) => ref.name === item.character);
+      const issue = match && validatedIssue(current, version, { ...item, reference: match.ref.id, time });
+      if (!issue) return "导入的问题须对应此镜头已绑定的角色，且要填写画面依据。";
+      found.push({ ...issue, source: "colab", sample, model, observedSide: item.observed_side });
+    }
+    version.issues = [...(version.issues ?? []).filter(({ source }) => source !== "colab"), ...found];
+  }
+  version.colabCheck = {
+    sample, group, model, runAt: new Date(runAt).toISOString(), time, status,
+    importedAt: new Date().toISOString(), importedBy: user.email,
+    ...(status === "failed" ? { error: error.trim() } : {}),
+  };
+}
+
 async function editProduction(request, env, current, user) {
   const input = await request.json();
   if (input?.revision !== current.revision) return saveError(409);
@@ -439,6 +475,10 @@ async function editProduction(request, env, current, user) {
     const issue = validatedIssue(current, version, input);
     if (!issue) return fail("请填写已绑定角色、检查项、问题描述和有效时间。", 400);
     (version.issues ??= []).push({ ...issue, source: "manual" });
+  } else if (input.kind === "importColabCheck") {
+    if (version?.shot !== clip.id) return fail("找不到该镜头的素材版本。", 404);
+    const problem = recordColabCheck(current, version, input, user);
+    if (problem) return fail(problem, 400);
   } else {
     return fail("制作操作无效。", 400);
   }
