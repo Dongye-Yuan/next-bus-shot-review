@@ -1,4 +1,6 @@
-# 团队镜头审核
+# 团队工作区开发与部署
+
+[项目首页](../README.md) · [逐项功能手册](../docs/features.md) · [演示与验证记录](../docs/demo.md)
 
 面向已授权团队成员的私密审核工作区。使用 ChatGPT 登录，审核状态、选版、操作人和时间写入共享数据库，导入的素材保存在私有对象存储。素材和审核记录按项目归属，成员角色适用于整个工作区。
 
@@ -16,6 +18,17 @@
 ## 部署配置
 
 使用 Sites Worker，D1 绑定名为 `DB`，R2 绑定名为 `BUCKET`，迁移文件在 `drizzle/`。运行 `npm test` 后执行 `npm run build`。部署时使用 Sites 的用户身份验证和私密访问策略。生产配置需要 `OWNER_EMAIL`，可另行配置逗号分隔的 `REVIEWER_EMAILS` 或 `VIEWER_EMAILS`。成员还必须获得对应站点的访问权限。身份头只可信于 Sites 管理的入口。
+
+启用正式工作区时，先将 `.openai/hosting.example.json` 复制为本地 `.openai/hosting.json`，再按部署环境绑定 D1 和 R2。启动前按编号应用 `drizzle/` 中的 SQL 迁移。以下变量在站点的服务端运行时配置。模型密钥按功能启用。
+
+| 配置 | 作用 |
+| --- | --- |
+| `OWNER_EMAIL` | 工作区所有者的登录邮箱。需获得站点访问权限。 |
+| `REVIEWER_EMAILS` / `VIEWER_EMAILS` | 可选的初始审核员和只读名单，以逗号分隔。 |
+| `GEMINI_API_KEY` | 可选，启用文字起稿和视觉检查。 `GEMINI_MODEL` 可指定项目能用的 Gemini 模型。 |
+| `STORY_DRAFT_OPENAI_KEY` | 可选，启用 OpenAI 文字起稿。 |
+| `OPENAI_API_KEY` | 可选，启用 OpenAI 视觉检查。 |
+| `FAL_IMAGE_KEY` / `FAL_VIDEO_KEY` | 可选，分别启用图片与视频生成。也可通过 `FAL_KEY` 为两类任务提供共同配置。 |
 
 团队素材最大 50 MB。预置演示素材来自《下一班车》的公开演示。通过「导出审核记录」可下载当前项目的镜头时间轴、审核意见和操作历史。素材文件独立存储，JSON 可用于归档审核信息。单个镜头的预览时长为 1–300 秒。工作区服务于同一团队，适合权限范围一致的内部审片；为不同客户隔离访问时，应部署独立工作区并配置各自的存储和授权。
 
