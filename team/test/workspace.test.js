@@ -481,3 +481,42 @@ test("confirms scene drafts and pins shared sets for two cast shots and an empty
   assert.equal(started.production.jobs[0].scene, draft.id);
   assert.equal(started.production.jobs[0].status, "queued");
 });
+
+test("returns optional model drafts without saving or exposing unconfirmed inputs", async (t) => {
+  const { db, env, post, send } = fixture();
+  t.after(() => db.close());
+  const story = "小满在车站等待。";
+  const scenes = [{ scene: "站台", characters: "小满", action: "小满等车。", dialogue: "", beat: "等待。" }];
+  const rows = [{ number: "01", scene: "站台", characters: "小满", action: "等待。", framing: "中景", duration: "60", dialogue: "", costume: "" }];
+  const draft = (kind, revision, role = "owner", options = {}) => post("/api/text-draft", role, { kind, revision, ...options });
+  assert.equal((await draft("script", 0)).status, 503);
+  env.STORY_DRAFT_OPENAI_KEY = "fixture-text-key";
+  assert.equal((await draft("script", 0, "viewer")).status, 403);
+  assert.equal((await draft("script", 0)).status, 400);
+  await post("/api/storyboard", "owner", { kind: "story", story, revision: 0 });
+  await post("/api/storyboard", "owner", { kind: "saveScript", scenes, revision: 1 });
+  assert.equal((await draft("board", 2)).status, 400);
+  assert.equal((await draft("script", 1)).status, 409);
+
+  let output = scenes;
+  let expected = story;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.match(url, /api.openai.com\/v1\/responses/);
+    const request = JSON.parse(init.body);
+    assert.equal(request.store, false);
+    assert.equal(request.input, expected);
+    return Response.json({ status: "completed", output: [{ content: [
+      { type: "output_text", text: JSON.stringify({ rows: output }) },
+    ] }] });
+  });
+  assert.deepEqual((await (await draft("script", 2)).json()).rows, scenes);
+  await post("/api/storyboard", "owner", { kind: "confirmScript", scenes, revision: 2 });
+  await post("/api/storyboard", "owner", { kind: "saveScript", scenes: [{ ...scenes[0], action: "未确认修订。" }], revision: 3 });
+  expected = JSON.stringify(scenes);
+  output = rows;
+  assert.equal((await draft("board", 4, "owner", { seconds: 59 })).status, 502);
+  assert.deepEqual((await (await draft("board", 4)).json()).rows, rows);
+  const snapshot = await (await send("/api/state", "viewer")).json();
+  assert.equal(snapshot.revision, 4);
+  assert.equal(snapshot.state.storyboard, undefined);
+});

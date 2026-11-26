@@ -791,7 +791,8 @@ $("project-select").onchange = (event) => openProject(event.target.value);
 $("refresh-team").onclick = () => openProject();
 const productionUI = setupProduction({ $, element, button, context: () => ({ state, role, capabilities }),
   commit, checkFile: validateAsset });
-setupStoryboard({ $, element, button, context: () => ({ state, role, clips }), commit,
+setupStoryboard({ $, element, button, context: () => ({ state, role, clips, capabilities }), commit,
+  modelDraft: (kind, options) => post(scopedPath("/api/text-draft"), { kind, ...options, revision }),
   jumpToShot: (id) => { selectShot(id); seekTo(clipStart(id)); $("shot-title").focus(); } });
 renderReview();
 showPreview();

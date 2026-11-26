@@ -1,9 +1,9 @@
 import {
   boardColumns, boardLimit, boardSample, storyLimit, normalizeBoard, parseBoard,
-  scriptColumns, scriptLimit, normalizeScript, parseScript, scriptPrompt, storyboardPrompt,
+  scriptColumns, scriptLimit, normalizeScript, parseScript, scriptPrompt, storyboardPrompt, draftScript, draftBoard,
 } from "./board-data.js";
 
-export function setupStoryboard({ $, element, button, context, commit, jumpToShot }) {
+export function setupStoryboard({ $, element, button, context, commit, modelDraft, jumpToShot }) {
   const dialog = $("storyboard-dialog");
   const message = $("storyboard-message");
   const story = $("story-text");
@@ -28,6 +28,7 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
       $(name + "-tab").setAttribute("aria-pressed", String(name === target));
     }
     $("prompt-preview").hidden = true;
+    for (const target of ["script", "board"]) clearReplacement(target);
     feedback();
   }
   function emptyRow(columns) {
@@ -39,6 +40,9 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
     const confirmed = Boolean(board?.confirmedAt);
     const locked = viewOnly();
     const existing = context().clips.length;
+    for (const mode of ["local", "model"]) $("draft-board-" + mode).disabled = locked || !context().state.script?.confirmed?.scenes.length;
+    $("draft-board-local").hidden = locked;
+    $("draft-board-model").hidden = locked || !context().capabilities.textDraft;
     $("board-import").hidden = locked;
     actions.hidden = locked;
     $("board-metadata").textContent = confirmed
@@ -66,11 +70,16 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
     $("script-metadata").textContent = status;
     const hasStory = Boolean(context().state.story?.text?.trim());
     $("copy-script-prompt").disabled = !hasStory;
-    $("script-prompt-hint").hidden = hasStory;
+    $("script-prompt-hint").textContent = hasStory
+      ? "规则起稿按原文段落整理。原文没有明确标注的场景和角色，请在表格补齐。"
+      : "请先在「故事原文」中保存故事。";
+    for (const mode of ["local", "model"]) $("draft-script-" + mode).disabled = !hasStory || !writeable();
+    $("draft-script-local").hidden = !writeable();
+    $("draft-script-model").hidden = !writeable() || !context().capabilities.textDraft;
     $("copy-board-prompt").disabled = !confirmed?.scenes.length;
     $("board-prompt-hint").textContent = confirmed
-      ? "分镜提示词使用最近确认的剧本。"
-      : "确认剧本后即可复制分镜提示词。";
+      ? "从最近确认的剧本起草分镜，目标总时长默认 60 秒。"
+      : "先确认剧本，再生成分镜草稿。";
     $("script-import").hidden = !writeable();
     $("script-actions").hidden = !writeable();
     $("script-table-wrap").hidden = !scenes.length;
@@ -174,6 +183,79 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
     return Number(input.value);
   }
 
+  function clearReplacement(kind) {
+    const box = $(kind + "-draft-confirm");
+    box.hidden = true;
+    box.replaceChildren();
+  }
+
+  function boardOptions() {
+    return { count: promptNumber("prompt-shot-count"), seconds: promptNumber("prompt-seconds") };
+  }
+
+  function applyDraft(kind, result, model, options) {
+    clearReplacement(kind);
+    const source = model ? "文字模型" : "规则";
+    if (kind === "script") {
+      scenes = result;
+      editScriptRows();
+      const missing = scenes.filter(({ scene, characters }) => !scene || !characters).length;
+      feedback(source + "已起草 " + scenes.length + " 场。"
+        + (missing ? "有 " + missing + " 场需补齐场景或角色。" : "") + "可以修改后保存或确认。");
+    } else {
+      rows = result;
+      renderBoard();
+      const total = rows.reduce((sum, row) => sum + Number(row.duration), 0);
+      feedback(source + "已起草 " + rows.length + " 镜，共 " + total + " 秒。"
+        + (options.count && options.count !== rows.length ? "按现有动作分为 " + rows.length + " 镜，可手动增减。" : "")
+        + "可以修改后保存或确认建镜。");
+    }
+  }
+
+  function requestDraft(kind, model) {
+    if (saving || !writeable() || (kind === "board" && viewOnly())) return;
+    const existing = kind === "script" ? scenes.length : rows.length;
+    clearReplacement(kind);
+    if (!existing && !model) {
+      generateDraft(kind, model);
+      return;
+    }
+    const box = $(kind + "-draft-confirm");
+    const details = [
+      existing && "起稿成功后会替换当前编辑表格，确认前仍可编辑。",
+      model && "会把本步骤的已保存原文或已确认剧本发送给文字服务。",
+    ].filter(Boolean).join(" ");
+    box.append(element("p", details, "context"), button("继续起稿", () => generateDraft(kind, model)),
+      button("取消", () => clearReplacement(kind)));
+    box.hidden = false;
+  }
+
+  async function generateDraft(kind, model) {
+    if (saving || !writeable() || (kind === "board" && viewOnly())) return;
+    try {
+      const options = kind === "board" ? boardOptions() : undefined;
+      clearReplacement(kind);
+      if (!model) {
+        const { story, script } = context().state;
+        const result = kind === "script" ? draftScript(story?.text) : draftBoard(script?.confirmed?.scenes, options);
+        applyDraft(kind, result, false, options);
+        return;
+      }
+      saving = true;
+      dialog.setAttribute("aria-busy", "true");
+      $(kind + "-panel").inert = true;
+      feedback("文字模型正在起草…");
+      const data = await modelDraft(kind, options);
+      applyDraft(kind, data.rows, true, options);
+    } catch (error) {
+      feedback(error.message, true);
+    } finally {
+      saving = false;
+      $(kind + "-panel").inert = false;
+      dialog.removeAttribute("aria-busy");
+    }
+  }
+
   function open() {
     story.value = context().state.story?.text ?? "";
     story.readOnly = !writeable();
@@ -194,6 +276,7 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
 
   async function persist(kind, data, success) {
     if (!writeable() || saving) return;
+    for (const target of ["script", "board"]) clearReplacement(target);
     saving = true;
     dialog.setAttribute("aria-busy", "true");
     // Freeze field edits while the revision used for this save is in flight.
@@ -230,6 +313,10 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
   $("script-tab").onclick = () => { if (!saving) selectPanel("script"); };
   $("board-tab").onclick = () => { if (!saving) selectPanel("board"); };
   $("story-save").onclick = () => persist("story", { story: story.value }, "故事原文已保存。");
+  for (const kind of ["script", "board"]) {
+    $("draft-" + kind + "-local").onclick = () => requestDraft(kind, false);
+    $("draft-" + kind + "-model").onclick = () => requestDraft(kind, true);
+  }
   $("copy-script-prompt").onclick = () => {
     try { copyPrompt(scriptPrompt(context().state.story?.text)); }
     catch (error) { feedback(error.message, true); }
@@ -264,7 +351,7 @@ export function setupStoryboard({ $, element, button, context, commit, jumpToSho
   $("script-confirm").onclick = () => {
     try {
       normalizeScript(scenes, true);
-      persist("confirmScript", { scenes }, "剧本已确认，可以到分镜表生成分镜提示词。");
+      persist("confirmScript", { scenes }, "剧本已确认，可以到分镜表起草分镜。");
     } catch (error) {
       feedback(error.message, true);
     }

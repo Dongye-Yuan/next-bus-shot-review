@@ -181,3 +181,125 @@ export const boardSample = [
   ["03", "许棠", "雨夜公交站棚", "右侧面近景", "许棠低头看手中的折叠伞，露出本人右侧的黄色发夹。", "4", "", "米白连帽雨衣"],
   ["04", "许棠、林澈", "雨夜公交站棚", "双人中景，平视", "许棠在身前撑开绿伞，伞沿短暂遮挡两人，随后两人共伞。", "5", "", ""],
 ].map((row) => row.join("\t")).join("\n");
+
+const sentenceBoundary = /(?<=[。！？!?；;])(?=[^”’」』》])/u;
+
+function splitAction(text, limit) {
+  const sentences = text.split(sentenceBoundary).map((line) => line.trim()).filter(Boolean);
+  const pieces = [];
+  for (const sentence of sentences) {
+    const characters = Array.from(sentence);
+    for (let offset = 0; offset < characters.length; offset += limit) {
+      pieces.push(characters.slice(offset, offset + limit).join(""));
+    }
+  }
+  return pieces;
+}
+
+export function draftScript(story) {
+  if (!story?.trim()) throw new Error("请先保存故事原文。");
+  if (story.length > storyLimit) throw new Error("请缩短故事原文后再生成草稿。");
+  const scenes = [];
+  let scene = "";
+  let characters = "";
+  const add = (action, dialogue, beat) => {
+    if (!action && !dialogue) return;
+    const parts = splitAction(action, 430);
+    const chunks = [];
+    for (const part of parts) {
+      if (chunks.length && chunks.at(-1).length + part.length + 1 <= 900) chunks[chunks.length - 1] += " " + part;
+      else chunks.push(part);
+    }
+    for (const [i, chunk] of (chunks.length ? chunks : [""]).entries()) {
+      const ending = splitAction(chunk, 180).at(-1) ?? "";
+      scenes.push({ scene, characters, action: chunk, dialogue: i === 0 ? dialogue : "", beat: beat || ending });
+    }
+  };
+  for (const paragraph of story.trim().split(/\r?\n\s*\r?\n/)) {
+    let action = [];
+    let dialogue = [];
+    let beat = "";
+    const flush = () => {
+      add(action.join(" "), dialogue.join("\n"), beat);
+      action = [];
+      dialogue = [];
+      beat = "";
+    };
+    for (const line of paragraph.trim().split(/\r?\n/)) {
+      const field = line.trim().match(/^(场景|出场角色|角色|动作|对白|剧情推进)\s*[：:]\s*(.*)$/u);
+      if (!field) {
+        if (line.trim()) action.push(line.trim());
+        continue;
+      }
+      const [, key, value] = field;
+      if (key === "场景") {
+        flush();
+        scene = value;
+        characters = "";
+      } else if (key === "角色" || key === "出场角色") characters = value;
+      else if (key === "对白") dialogue.push(value);
+      else if (key === "剧情推进") beat = value;
+      else action.push(value);
+    }
+    flush();
+  }
+  if (!scenes.length) throw new Error("请在故事里加入具体动作或情节。");
+  return normalizeScript(scenes);
+}
+
+export function draftBoardOptions({ count, seconds } = {}) {
+  if (count !== undefined && (!Number.isInteger(count) || count < 1 || count > boardLimit)) {
+    throw new Error("目标镜头数应为 1–" + boardLimit + " 的整数。");
+  }
+  if (seconds !== undefined && (!Number.isInteger(seconds) || seconds < 1 || seconds > 300 * boardLimit)) {
+    throw new Error("目标总时长超出范围。");
+  }
+  return { count, seconds: seconds ?? 60 };
+}
+
+export function draftBoard(scenes, options) {
+  const source = normalizeScript(scenes, true);
+  const { count, seconds } = draftBoardOptions(options);
+  const groups = source.map((scene) => ({ scene, actions: splitAction(scene.action, 280) }));
+  const totalBeats = groups.reduce((total, { actions }) => total + actions.length, 0);
+  const target = count ?? Math.min(12, Math.max(source.length, totalBeats));
+  const sizes = groups.map(() => 1);
+  for (let total = source.length; total < target; total++) {
+    const canSplit = groups.map(({ actions }, index) => actions.length - sizes[index]);
+    const next = canSplit.indexOf(Math.max(...canSplit));
+    if (canSplit[next] <= 0) break;
+    sizes[next]++;
+  }
+  const rows = [];
+  for (const [index, { scene, actions }] of groups.entries()) {
+    const size = sizes[index];
+    const environment = !castNames(scene.characters).length;
+    for (let i = 0; i < size; i++) {
+      const first = Math.floor(i * actions.length / size);
+      const after = Math.floor((i + 1) * actions.length / size);
+      let block = "";
+      for (const action of actions.slice(first, after)) {
+        if (block.length + action.length + 1 > 600) {
+          append(block);
+          block = "";
+        }
+        block += (block ? " " : "") + action;
+      }
+      if (block) append(block);
+      function append(action) {
+        const firstInScene = rows.length === 0 || rows.at(-1).index !== index;
+        const dialogue = firstInScene ? scene.dialogue : "";
+        if (dialogue.length > 300) throw new Error("第 " + (index + 1) + " 场对白超过单镜头 300 字，请先在剧本中拆分该场对白。");
+        rows.push({ index, scene: scene.scene, characters: scene.characters, action, dialogue,
+          number: String(rows.length + 1).padStart(2, "0"),
+          framing: firstInScene ? "交代场景 · 全景或中景" : environment ? "环境细节 · 近景" : "动作推进 · 中景",
+        });
+      }
+    }
+  }
+  if (seconds < rows.length || seconds > rows.length * 300 || rows.length > boardLimit) {
+    throw new Error("按现在的剧情可拆成 " + rows.length + " 镜，请调整目标总时长或缩短剧本。");
+  }
+  const durations = rows.map((_, index) => Math.floor((index + 1) * seconds / rows.length) - Math.floor(index * seconds / rows.length));
+  return normalizeBoard(rows.map((row, index) => ({ ...row, duration: String(durations[index]) })));
+}
