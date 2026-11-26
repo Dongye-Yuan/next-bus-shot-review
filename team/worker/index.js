@@ -1,4 +1,4 @@
-import { normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit } from "../client/board-data.js";
+import { castNames, normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit } from "../client/board-data.js";
 
 const demoClips = [
   { id: "01", title: "雨夜站棚", duration: 4, context: "双人中景，建立站棚与人物站位。" },
@@ -258,6 +258,7 @@ async function upload(request, env, current, user) {
     id, shot, ...(from ? { replaces: from } : {}),
     ...(external ? { generationSource: "external" } : {}),
     ...(from || external ? { references: production(current.state).shots[shot]?.references ?? [] } : {}),
+    ...(from || external ? { scene: boundScene(current, shot)?.id } : {}),
     ...(keyframe ? { keyframe } : {}), title: file.name.slice(0, 240), type: mediaTypes.get(file.type),
     status: "pending", note: "", file: mediaPath(current.project, id),
     importedAt: new Date().toISOString(), importedBy: user.email,
@@ -275,7 +276,8 @@ async function media(request, env, current, id) {
   const version = current.state.versions.some((item) => item.id === id && item.file === mediaPath(current.project, id));
   const reference = current.state.production?.references.some((item) =>
     Object.values(item.images).some((image) => image.id === id && image.file === mediaPath(current.project, id)));
-  if (!version && !reference) {
+  const sceneImage = scenesOf(current.state).some((item) => item.image?.id === id && item.image.file === mediaPath(current.project, id));
+  if (!version && !reference && !sceneImage) {
     return fail("找不到该素材。", 404);
   }
   const head = await env.BUCKET.head(id);
@@ -344,6 +346,10 @@ const demoSnapshot = "https://raw.githubusercontent.com/Dongye-Yuan/next-bus-sho
 function production(state) {
   return state.production ??= { references: [], shots: {}, jobs: [] };
 }
+const scenesOf = (state) => state.production?.scenes ?? [];
+const boundScene = (current, shot) => scenesOf(current.state).find(({ id, confirmedAt }) =>
+  confirmedAt && id === current.state.production?.shots[shot]?.scene);
+
 function assignedReferences(current, shot) {
   const config = production(current.state);
   return (config.shots[shot]?.references ?? []).map(({ reference, angle }) => ({
@@ -393,6 +399,40 @@ async function addReference(request, env, current, user) {
   const status = await save(env, current, "addReference", user, { title: name });
   if (status === 200) return snapshot(current, user);
   await Promise.all(Object.values(reference.images).map(({ id }) => env.BUCKET.delete(id)));
+  return saveError(status);
+}
+
+async function addScene(request, env, current, user) {
+  if (Number(request.headers.get("Content-Length")) > referenceLimit + 65536) return fail("场景图最大 3 MB。", 413);
+  const form = await request.formData();
+  if (form.get("revision") !== String(current.revision)) return saveError(409);
+  const name = trim(form.get("name"), 80);
+  const description = trim(form.get("description"), 800);
+  const file = form.get("image");
+  const draftId = form.get("draft");
+  const scenes = production(current.state).scenes ??= [];
+  const draft = draftId && scenes.find(({ id }) => id === draftId);
+  if (draftId && (!draft || draft.confirmedAt)) return fail("只能编辑当前项目的场景草稿。", 400);
+  if (!name || !description || (!draft && !(file instanceof File)) ||
+      (file !== null && (!(file instanceof File) || !file.size || file.size > referenceLimit || mediaTypes.get(file.type) !== "image"))) {
+    return fail("请填写场景名称、设定和有效参考图，单张最大 3 MB。", 400);
+  }
+  const previous = draft?.image;
+  const imageId = file ? crypto.randomUUID() : null;
+  const image = imageId ? { id: imageId, file: mediaPath(current.project, imageId) } : previous;
+  if (file) await env.BUCKET.put(imageId, file, { httpMetadata: { contentType: file.type } });
+  const sequence = 1 + scenes.reduce((max, row) => row.name === name ? Math.max(max, row.edition) : max, 0);
+  const values = { name, description, image, edition: draft?.name === name ? draft.edition : sequence };
+  if (draft) Object.assign(draft, values);
+  else scenes.push({ id: crypto.randomUUID(), ...values, createdAt: new Date().toISOString() });
+
+  // A thrown database error leaves the commit outcome unknown, so retain the uploaded object.
+  const status = await save(env, current, draft ? "editScene" : "addScene", user, { title: name });
+  if (status === 200) {
+    if (previous && imageId) await Promise.allSettled([env.BUCKET.delete(previous.id)]);
+    return snapshot(current, user);
+  }
+  if (imageId) await Promise.allSettled([env.BUCKET.delete(imageId)]);
   return saveError(status);
 }
 
@@ -453,6 +493,14 @@ async function editProduction(request, env, current, user) {
     ref.confirmedBy = user.email;
     return saveProduction(env, current, user, input.kind, { title: ref.name });
   }
+  if (input.kind === "confirmScene") {
+    const scene = scenesOf(current.state).find(({ id }) => id === input.scene);
+    if (!scene) return fail("找不到该场景参考。", 404);
+    if (scene.confirmedAt) return snapshot(current, user);
+    scene.confirmedAt = new Date().toISOString();
+    scene.confirmedBy = user.email;
+    return saveProduction(env, current, user, input.kind, { title: scene.name });
+  }
   const clip = clipById(current, input.shot);
   if (!clip) return fail("找不到该镜头。", 404);
   const version = versionById(current, input.version);
@@ -464,7 +512,13 @@ async function editProduction(request, env, current, user) {
         new Set(chosen.map((ref) => ref.name)).size !== refs.length) {
       return fail("请为每个角色选择一套已确认的参考图和视角。", 400);
     }
-    (config.shots[clip.id] ??= {}).references = refs.map(({ reference, angle }) => ({ reference, angle }));
+    if (input.scene !== undefined && input.scene !== null &&
+        !scenesOf(current.state).some(({ id, confirmedAt }) => id === input.scene && confirmedAt)) {
+      return fail("请选择当前项目已确认的场景参考。", 400);
+    }
+    const bindings = config.shots[clip.id] ??= {};
+    bindings.references = refs.map(({ reference, angle }) => ({ reference, angle }));
+    if (input.scene !== undefined) bindings.scene = input.scene;
   } else if (input.kind === "lockFrame") {
     if (version?.shot !== clip.id || version.type !== "image" || version.status !== "approved") {
       return fail("请选择该镜头中已通过审核的图片版本。", 400);
@@ -522,8 +576,13 @@ async function startGeneration(env, current, user, input) {
   const config = production(current.state);
   const clip = clipById(current, input.shot);
   const refs = clip && assignedReferences(current, clip.id);
+  const scene = clip && boundScene(current, clip.id);
   const prompt = trim(input.prompt, 1400);
-  if (!clip || !refs.length || !prompt || !["image", "video"].includes(input.type)) return fail("请先绑定已确认角色，并填写生成提示。", 400);
+  const needsRoles = castNames(clip?.storyboard?.characters).length > 0;
+  if (!clip || !prompt || !["image", "video"].includes(input.type)) return fail("请选择镜头、素材类型并填写生成提示。", 400);
+  if (!refs.length && (needsRoles || !scene)) {
+    return fail(needsRoles ? "此分镜有人物入镜，请先绑定已确认的角色。" : "请先绑定已确认的角色或场景。", 400);
+  }
   if (config.jobs.some((job) => job.shot === clip.id && ["submitting", "queued", "running", "unknown"].includes(job.status))) {
     return fail("这个镜头有未结束的生成任务，请先查询进度。", 409);
   }
@@ -549,12 +608,14 @@ async function startGeneration(env, current, user, input) {
     : editBase ? "编辑图 1，保留构图场景，按参考图修复问题，输出 9:16。"
       : "按参考图生成 9:16 动画关键帧。";
   const text = [task, "镜头要求：" + prompt, from?.note && "返工原因：" + from.note, description,
+    scene && "场景参考（第 " + scene.edition + " 版）：" + scene.name + "。 " + scene.description,
     "分镜：" + clip.context].filter(Boolean).join("\n").slice(0, input.type === "video" ? 2400 : 4800);
   let body;
   try {
     if (input.type === "image") {
       const images = refs.map(({ ref, angle }) => ref.images[angle]);
       if (editBase) images.unshift(editBase);
+      if (scene) images.push(scene.image);
       body = { prompt: text, aspect_ratio: "9:16", num_images: 1, output_format: "jpeg",
         image_urls: await Promise.all(images.map((asset) => imageInput(env, asset))) };
     } else {
@@ -567,7 +628,7 @@ async function startGeneration(env, current, user, input) {
     id: crypto.randomUUID(), shot: clip.id, type: input.type, status: "submitting",
     from: from?.id, keyframe: input.type === "video" ? frame.id : undefined,
     references: refs.map(({ ref, angle }) => ({ reference: ref.id, angle })),
-    createdAt: new Date().toISOString(), provider: "fal",
+    scene: scene?.id, createdAt: new Date().toISOString(), provider: "fal",
   };
   config.jobs.push(job);
   const reserved = await save(env, current, "startGeneration", user, { shot: clip.id });
@@ -643,7 +704,7 @@ async function pollGeneration(env, current, user, id) {
     const version = {
       id: job.id, shot: job.shot, title: job.type === "image" ? "AI 关键帧" : "AI 视频",
       file: mediaPath(current.project, job.id), type: job.type, status: "pending", note: "",
-      keyframe: job.keyframe, replaces: job.from, references: job.references, generatedAt: new Date().toISOString(),
+      keyframe: job.keyframe, replaces: job.from, references: job.references, scene: job.scene, generatedAt: new Date().toISOString(),
     };
     current.state.versions.push(version);
     job.status = "completed";
@@ -755,6 +816,7 @@ export default {
         if (pathname === "/api/review") return await update(request, env, current, user);
         if (pathname === "/api/shots") return await manageShots(request, env, current, user);
         if (pathname === "/api/upload") return await upload(request, env, current, user);
+        if (pathname === "/api/scenes") return await addScene(request, env, current, user);
         if (pathname === "/api/references") return await addReference(request, env, current, user);
         if (pathname === "/api/production") return await editProduction(request, env, current, user);
         if (pathname === "/api/generation") return await generation(request, env, current, user);

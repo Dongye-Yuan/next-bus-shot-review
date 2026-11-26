@@ -413,3 +413,71 @@ test("keeps the confirmed script available while a later draft is edited", async
   const revised = await (await saveScript("confirmScript", [newer], 3)).json();
   assert.equal(revised.state.script.confirmed.scenes[0].action, newer.action);
 });
+
+test("confirms scene drafts and pins shared sets for two cast shots and an empty shot", async (t) => {
+  const { db, env, send, post, origin } = fixture();
+  t.after(() => db.close());
+  const project = (await (await post("/api/projects", "owner", { title: "场景验收" })).json()).project;
+  const path = (route) => route + "?project=" + project.id;
+  let revision = 0;
+  const accept = async (response) => {
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    revision = data.revision;
+    return data.state;
+  };
+  const write = (route, data) => post(path(route), "owner", { ...data, revision });
+  const sceneUpload = (description, file, draft, role = "owner") => {
+    const body = new FormData();
+    body.set("revision", String(revision));
+    body.set("name", "雨夜站棚");
+    body.set("description", description);
+    if (draft) body.set("draft", draft);
+    if (file) body.set("image", new File([file], "shelter.png", { type: "image/png" }));
+    return send(path("/api/scenes"), role, { method: "POST", headers: { Origin: origin }, body });
+  };
+  const rows = ["许棠", "林澈", "无人"].map((characters, index) => ({
+    number: String(index + 1), characters, scene: "雨夜站棚", framing: "全景", action: "等车", duration: "4",
+  }));
+  const clips = (await accept(await write("/api/storyboard", { kind: "confirm", rows }))).clips;
+  assert.equal((await sceneUpload("暖灯", "scene-v1", null, "viewer")).status, 403);
+  const draft = (await accept(await sceneUpload("草稿", "scene-v1"))).production.scenes[0];
+  const bind = (shot, scene, references = []) => write("/api/production", { kind: "bindReferences", shot, scene, references });
+  assert.equal((await bind(clips[2].id, draft.id)).status, 400);
+  await accept(await sceneUpload("暖灯和湿路面", null, draft.id));
+  await accept(await write("/api/production", { kind: "confirmScene", scene: draft.id }));
+  assert.equal((await sceneUpload("改图", "new", draft.id)).status, 400);
+  const newer = (await accept(await sceneUpload("不同天气", "scene-v2"))).production.scenes[1];
+  assert.equal(newer.edition, 2);
+  await accept(await write("/api/production", { kind: "confirmScene", scene: newer.id }));
+  assert.equal((await send(draft.image.file, null)).status, 403);
+  assert.equal((await send(draft.image.file.split("?")[0], "owner")).status, 404);
+  assert.equal(await (await send(draft.image.file, "viewer")).text(), "scene-v1");
+
+  for (const [index, name] of ["许棠", "林澈"].entries()) {
+    const body = new FormData();
+    for (const [key, value] of Object.entries({ revision: String(revision), name, identity: "角色特征", outfit: "雨衣" })) body.set(key, value);
+    for (const angle of ["front", "side", "full"]) body.set(angle, new File(["ref"], "role.png", { type: "image/png" }));
+    const ref = (await accept(await send(path("/api/references"), "owner", {
+      method: "POST", headers: { Origin: origin }, body,
+    }))).production.references.at(-1);
+    await accept(await write("/api/production", { kind: "confirmReference", reference: ref.id }));
+    await accept(await bind(clips[index].id, draft.id, [{ reference: ref.id, angle: "front" }]));
+  }
+  await accept(await bind(clips[2].id, draft.id));
+  const read = await (await send(path("/api/state"), "viewer")).json();
+  assert.deepEqual(clips.map(({ id }) => read.state.production.shots[id].scene), Array(3).fill(draft.id));
+  assert.deepEqual(clips.map(({ id }) => read.state.production.shots[id].references.length), [1, 1, 0]);
+
+  env.FAL_KEY = "fixture";
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.equal(new URL(url).hostname, "queue.fal.run");
+    const payload = JSON.parse(init.body);
+    assert.deepEqual(payload.image_urls, ["data:image/png;base64,c2NlbmUtdjE="]);
+    assert.match(payload.prompt, /暖灯和湿路面/);
+    return Response.json({ request_id: "scene-request-test" });
+  });
+  const started = await accept(await write("/api/generation", { kind: "submit", type: "image", shot: clips[2].id, prompt: "灯光空镜" }));
+  assert.equal(started.production.jobs[0].scene, draft.id);
+  assert.equal(started.production.jobs[0].status, "queued");
+});

@@ -311,7 +311,8 @@ function renderReview() {
   const actions = {
     review: "审核", pick: "选用", import: "导入",
     createProject: "新建项目", addShot: "新增镜头", editShot: "编辑镜头", moveShot: "调整镜头顺序",
-    addReference: "新增角色参考", confirmReference: "确认角色参考", bindReferences: "绑定角色参考",
+    addReference: "新增角色参考", confirmReference: "确认角色参考", bindReferences: "绑定角色与场景",
+    addScene: "新增场景参考", editScene: "编辑场景参考", confirmScene: "确认场景参考",
     lockFrame: "确认关键帧", addIssue: "标记问题", checkConsistency: "AI 一致性检查", importColabCheck: "导入 Colab 检查",
     saveStory: "保存故事原文", saveScript: "保存剧本草稿", confirmScript: "确认剧本", saveStoryboard: "保存分镜草稿", confirmStoryboard: "确认分镜并建镜",
     startGeneration: "发起生成", generationReceipt: "保存任务回执", generationProgress: "更新生成状态", generationComplete: "导入生成结果",

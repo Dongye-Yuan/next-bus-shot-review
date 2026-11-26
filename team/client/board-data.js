@@ -1,3 +1,8 @@
+export function castNames(value = "") {
+  return value.split(/[、，,；;／/]/).map((name) => name.trim())
+    .filter((name) => name && !/^(无|无人|空镜|无人物|无角色)$/.test(name));
+}
+
 export const boardColumns = [
   { key: "number", title: "镜头编号", limit: 24 },
   { key: "characters", title: "出场角色", limit: 120 },

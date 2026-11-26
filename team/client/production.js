@@ -1,3 +1,4 @@
+import { castNames } from "./board-data.js";
 import { angles, shotPrompt } from "./shot-prompt.js";
 const features = ["脸型", "发型", "标志性特征", "服装", "其他"];
 const imageTypes = "image/jpeg,image/png,image/webp";
@@ -89,6 +90,8 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     return [wrapper, input];
   }
   const config = () => context().state.production ?? { references: [], shots: {}, jobs: [] };
+  const scenes = () => config().scenes ?? [];
+  const sceneFor = (shot) => scenes().find(({ id, confirmedAt }) => confirmedAt && id === config().shots[shot]?.scene);
   const writable = () => context().role !== "viewer";
   const bindings = (shot) => config().shots[shot]?.references ?? [];
   const findRef = (id) => config().references.find((ref) => ref.id === id);
@@ -129,7 +132,14 @@ export function setupProduction({ $, element, button, context, commit, checkFile
   }
   function showReferences() {
     open("项目角色参考");
-    if (writable()) content.append(button("新增角色参考版本", newReference, "pick"));
+    if (writable()) content.append(button("新增角色参考版本", () => newReference(), "pick"));
+    const suggestions = [...new Set(confirmedRows().flatMap((row) => castNames(row.characters)))];
+    const missing = suggestions.filter((name) => !config().references.some((ref) => ref.name === name));
+    if (missing.length && writable()) {
+      const candidates = element("div", "", "actions");
+      for (const name of missing) candidates.append(button("设定角色 · " + name, () => newReference(name)));
+      content.append(element("p", "来自已确认剧本和分镜的角色", "context"), candidates);
+    }
     if (!config().references.length) content.append(element("p", "还没有角色参考。每套参考包含角色特征、服装、正面、侧面和全身图。", "context"));
     for (const ref of [...config().references].reverse()) {
       const card = element("article", "", "production-card");
@@ -141,10 +151,10 @@ export function setupProduction({ $, element, button, context, commit, checkFile
       content.append(card);
     }
   }
-  function newReference() {
+  function newReference(suggestedName = "") {
     open("新增角色参考版本");
     const form = element("form", "", "production-form");
-    const [nameLabel, name] = field("角色名", "input", { required: true, maxLength: 80 });
+    const [nameLabel, name] = field("角色名", "input", { required: true, maxLength: 80, value: suggestedName });
     const [identityLabel, identity] = field("身份特征（脸型、发型、标志性特征）", "textarea", { required: true, maxLength: 600, rows: 3 });
     const [outfitLabel, outfit] = field("本版服装", "input", { required: true, maxLength: 300 });
     form.append(nameLabel, identityLabel, outfitLabel);
@@ -179,23 +189,111 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     content.append(form);
   }
 
-  function assign(shot) {
-    open("绑定镜头角色");
-    const refs = config().references.filter(({ confirmedAt }) => confirmedAt);
-    if (!refs.length) {
-      content.append(element("p", "请先上传并确认角色参考。", "context"), button("打开角色参考", showReferences));
-      return;
+  function confirmedRows() {
+    const { script, storyboard } = context().state;
+    return [...(script?.confirmed?.scenes ?? []), ...(storyboard?.confirmedAt ? storyboard.rows : [])];
+  }
+
+  function showScenes() {
+    open("项目场景参考");
+    if (writable()) {
+      content.append(button("新增场景参考版本", () => sceneForm(), "pick"));
+      const candidates = new Map();
+      for (const row of confirmedRows()) {
+        if (!candidates.has(row.scene) && !scenes().some(({ name }) => name === row.scene)) {
+          candidates.set(row.scene, row.action);
+        }
+      }
+      if (candidates.size) {
+        const links = element("div", "", "actions");
+        for (const [name, action] of candidates) links.append(button("设定场景 · " + name, () => sceneForm({ name, action })));
+        content.append(element("p", "来自已确认剧本和分镜的场景", "context"), links);
+      }
     }
+    if (!scenes().length) content.append(element("p", "用一张参考图和场景设定统一不同镜头中的地点、光线和道具。", "context"));
+    for (const scene of [...scenes()].reverse()) {
+      const card = element("article", "", "production-card");
+      const figure = element("figure", "", "scene-reference-image");
+      figure.append(image(scene.image.file, scene.name + " · 场景参考图"));
+      card.append(element("h3", scene.name + " · 第 " + scene.edition + " 版 · " + (scene.confirmedAt ? "已确认" : "待确认")),
+        element("p", scene.description, "context"), figure);
+      if (writable()) {
+        const actions = element("div", "", "actions");
+        if (scene.confirmedAt) actions.append(button("从此版新增版本", () => sceneForm({ name: scene.name, description: scene.description })));
+        else actions.append(button("编辑草稿", () => sceneForm(scene)), button("确认场景版本", () =>
+          run({ kind: "confirmScene", scene: scene.id }, null, "/api/production", showScenes)));
+        card.append(actions);
+      }
+      content.append(card);
+    }
+  }
+
+  function sceneForm(initial = {}) {
+    open(initial.id ? "编辑场景草稿" : "新增场景参考版本");
     const form = element("form", "", "production-form");
+    const [nameLabel, name] = field("场景名称", "input", { required: true, maxLength: 80, value: initial.name ?? "" });
+    const [descriptionLabel, description] = field("场景设定", "textarea", { required: true, maxLength: 800, rows: 4,
+      value: initial.description ?? "", placeholder: "填写空间布局、光线、色调和需要保持的道具。" });
+    if (initial.action) form.append(element("p", "原剧本或分镜 · " + initial.action, "context"));
+    const [fileLabel, input] = field(initial.id ? "替换场景参考图（选填）" : "场景参考图（最大 3 MB）", "input",
+      { type: "file", accept: imageTypes, required: !initial.id });
+    const save = element("button", "保存草稿", "pick");
+    save.type = "submit";
+    form.append(nameLabel, descriptionLabel, fileLabel, save, button("返回场景参考库", showScenes));
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (save.disabled) return;
+      const file = input.files[0];
+      const upload = new FormData();
+      upload.set("name", name.value);
+      upload.set("description", description.value);
+      if (initial.id) upload.set("draft", initial.id);
+      save.disabled = true;
+      try {
+        if (file) {
+          if (file.size > 3 * 1024 * 1024) throw new Error("场景图最大 3 MB。");
+          await checkFile(file, "image");
+          upload.set("image", file);
+        }
+        await run(null, upload, "/api/scenes", showScenes);
+      } catch (error) {
+        message(error.message, true);
+      } finally {
+        save.disabled = false;
+      }
+    };
+    content.append(form);
+  }
+
+  function assign(shot) {
+    open("绑定角色与场景");
+    const refs = config().references.filter(({ confirmedAt }) => confirmedAt);
+    const availableScenes = scenes().filter(({ confirmedAt }) => confirmedAt);
+    if (!refs.length) content.append(button("打开角色参考", showReferences));
+    if (!availableScenes.length) content.append(button("打开场景参考", showScenes));
+    const row = shot.storyboard;
+    const saved = config().shots[shot.id] ?? {};
+    const upper = (value) => value.trim().normalize("NFKC").toLowerCase();
+    const latestNamed = (list, name) => list.filter((item) => upper(item.name) === upper(name))
+      .sort((a, b) => b.edition - a.edition)[0];
+    const recommendedRoles = row && [...new Set(castNames(row.characters))].map((name) => latestNamed(refs, name)).filter(Boolean);
+    const recommendedScene = row && latestNamed(availableScenes, row.scene);
+    if (row) content.append(element("p", "按分镜名称匹配已确认版本。检查下列建议，保存后生效。", "context"));
+    const form = element("form", "", "production-form");
+    const [sceneLabel, scene] = select("场景版本", [["", "未绑定"], ...availableScenes.map((item) =>
+      [item.id, item.name + " · 第 " + item.edition + " 版"])]);
+    scene.value = saved.scene !== undefined ? (saved.scene ?? "") : (recommendedScene?.id ?? "");
+    form.append(sceneLabel);
     const slots = [0, 1, 2].map((index) => {
-      const saved = bindings(shot.id)[index];
-      const row = element("div", "", "production-inline");
+      const assigned = saved.references?.[index];
+      const fields = element("div", "", "production-inline");
       const [roleLabel, role] = select("角色 " + (index + 1), [["", "未分配"], ...refs.map((ref) => [ref.id, ref.name + " · 第 " + ref.edition + " 版"])]);
       const [angleLabel, angle] = select("参考视角", Object.entries(angles));
-      role.value = saved?.reference ?? "";
-      angle.value = saved?.angle ?? "front";
-      row.append(roleLabel, angleLabel);
-      form.append(row);
+      role.value = saved.references ? (assigned?.reference ?? "") : (recommendedRoles?.[index]?.id ?? "");
+      const framing = row?.framing ?? "";
+      angle.value = assigned?.angle ?? (/侧[面脸]/.test(framing) ? "side" : /全景|背影|背面|全身/.test(framing) ? "full" : "front");
+      fields.append(roleLabel, angleLabel);
+      form.append(fields);
       return { role, angle };
     });
     const save = element("button", "保存绑定", "pick");
@@ -204,7 +302,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     form.onsubmit = (event) => {
       event.preventDefault();
       const references = slots.filter(({ role }) => role.value).map(({ role, angle }) => ({ reference: role.value, angle: angle.value }));
-      run({ kind: "bindReferences", shot: shot.id, references }, null, "/api/production", () => dialog.close());
+      run({ kind: "bindReferences", shot: shot.id, references, scene: scene.value || null }, null, "/api/production", () => dialog.close());
     };
     content.append(form);
   }
@@ -249,7 +347,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     content.append(form);
   }
 
-  function externalPrompt({ shot, type, from, frame, references, reuse, instruction, videoReady }) {
+  function externalPrompt({ shot, type, from, frame, references, scene, reuse, instruction, videoReady }) {
     const box = element("section", "", "production-card external-prompt");
     const title = element("h3", "在外部工具生成");
     const tools = element("div", "", "actions");
@@ -257,7 +355,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     promptLabel.hidden = true;
     const copy = button("复制" + (type === "image" ? "关键帧" : "视频") + "提示词", async () => {
       try {
-        const { text } = shotPrompt({ shot, type, from, frame, references, directive: instruction.value });
+        const { text } = shotPrompt({ shot, type, from, frame, references, scene, directive: instruction.value });
         preview.value = text;
         promptLabel.hidden = false;
         try {
@@ -281,7 +379,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     if (!videoReady) {
       box.append(element("p", "确认选定的关键帧后，即可复制视频提示词。", "context"));
     } else {
-      const { assets } = shotPrompt({ shot, type, from, frame, references });
+      const { assets } = shotPrompt({ shot, type, from, frame, references, scene });
       if (assets.length) {
         const list = element("ul", "", "shot-prompt-assets");
         for (const { file, label, optional } of assets) {
@@ -291,7 +389,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
           link.target = "_blank";
           link.rel = "noopener noreferrer";
           item.append(link);
-          if (optional) item.append(element("small", "支持角色参考时附加"));
+          if (optional) item.append(element("small", "支持额外参考图时附加"));
           list.append(item);
         }
         box.append(element("p", "要上传的素材（按顺序）", "context"), list);
@@ -305,6 +403,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     open(from ? "镜头返工" : type === "image" ? "生成关键帧" : "生成视频");
     const references = bindings(shot.id).map(({ reference, angle }) => ({ ref: findRef(reference), angle }))
       .filter(({ ref }) => ref?.confirmedAt);
+    const scene = sceneFor(shot.id);
     const currentFrame = config().shots[shot.id]?.keyframe;
     const selected = findVersion(reuse ? (from?.keyframe ?? currentFrame) : currentFrame);
     const frame = selected?.status === "approved" && selected.type === "image" && selected.shot === shot.id ? selected : null;
@@ -324,7 +423,9 @@ export function setupProduction({ $, element, button, context, commit, checkFile
       }
     }
     if (type === "video") content.append(element("p", "将使用关键帧 · " + (videoReady ? frame.title : "暂未确认"), "context"));
-    if (!references.length) content.append(element("p", "已绑定的角色参考会随提示词列出。有人物入镜时，请先绑定角色参考。", "context"));
+    const needsRoles = castNames(shot.storyboard?.characters).length > 0;
+    if (!references.length && needsRoles) content.append(element("p", "此分镜有人物入镜，请先绑定角色参考。", "context"));
+    if (scene) content.append(element("p", "将使用场景 · " + scene.name + " 第 " + scene.edition + " 版", "context"));
     const form = element("form", "", "production-form");
     const [label, prompt] = field("生成或返工提示", "textarea", { rows: 4, maxLength: 1400,
       value: from?.note || shot.context });
@@ -332,7 +433,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     if (context().capabilities.generation) {
       const submit = element("button", "提交站内生成", "pick");
       submit.type = "submit";
-      submit.disabled = !references.length || !videoReady;
+      submit.disabled = (!references.length && (needsRoles || !scene)) || !videoReady;
       prompt.required = true;
       form.append(submit, element("p", "提交会把此镜头的素材和提示发送给 fal，按你的服务账户计费。", "context"));
       form.onsubmit = (event) => {
@@ -343,7 +444,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     } else {
       form.onsubmit = (event) => event.preventDefault();
     }
-    content.append(form, externalPrompt({ shot, type, from, frame, references, reuse, instruction: prompt, videoReady }));
+    content.append(form, externalPrompt({ shot, type, from, frame, references, scene, reuse, instruction: prompt, videoReady }));
   }
 
   function showJobs(shot) {
@@ -530,6 +631,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
 
   function renderShot(shot, ready) {
     $("project-references").hidden = !ready;
+    $("project-scenes").hidden = !ready;
     $("shot-production").hidden = !shot;
     if (!shot) return;
     const line = $("shot-production-summary");
@@ -538,9 +640,10 @@ export function setupProduction({ $, element, button, context, commit, checkFile
       return ref?.name + " 第 " + ref?.edition + " 版（" + angles[angle] + "）";
     }).join("、");
     const keyframe = findVersion(config().shots[shot.id]?.keyframe);
-    line.textContent = "角色参考 · " + (names || "未绑定") + "　关键帧 · " + (keyframe?.status === "approved" ? keyframe.title : "未确认");
+    const scene = sceneFor(shot.id);
+    line.textContent = "场景参考 · " + (scene ? scene.name + " 第 " + scene.edition + " 版" : "未绑定") + "　角色参考 · " + (names || "未绑定") + "　关键帧 · " + (keyframe?.status === "approved" ? keyframe.title : "未确认");
     const items = [button("查看生成任务", () => showJobs(shot))];
-    if (writable()) items.unshift(button("绑定角色参考", () => assign(shot)),
+    if (writable()) items.unshift(button("绑定角色与场景", () => assign(shot)),
       button("生成关键帧", () => preparation(shot, "image")), button("生成视频", () => preparation(shot, "video")));
     $("shot-production-actions").replaceChildren(...items);
     const pending = config().jobs.filter((job) => job.shot === shot.id && ["queued", "running", "unknown", "submitting"].includes(job.status));
@@ -550,6 +653,8 @@ export function setupProduction({ $, element, button, context, commit, checkFile
   function versionTools(version, shot) {
     const section = element("div", "", "version-production");
     const actions = element("div", "", "actions");
+    const scene = scenes().find(({ id }) => id === version.scene);
+    if (scene) section.append(element("p", "生成用场景 · " + scene.name + " 第 " + scene.edition + " 版", "context"));
     const from = findVersion(version.replaces);
     if (from) section.append(element("p", "返工自 · " + from.title, "context"));
     const keyframe = findVersion(version.keyframe);
@@ -593,6 +698,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
     return section;
   }
   $("project-references").onclick = showReferences;
+  $("project-scenes").onclick = showScenes;
   $("production-close").onclick = () => { if (!working) dialog.close(); };
   dialog.addEventListener("cancel", (event) => { if (working || $("production-close").disabled) event.preventDefault(); });
   dialog.addEventListener("close", () => { content.replaceChildren(); message(); });

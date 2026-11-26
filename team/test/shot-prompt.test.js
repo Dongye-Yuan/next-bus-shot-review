@@ -32,3 +32,14 @@ test("requires an approved frame for the same shot and carries timed issue evide
   assert.match(text, /2.5 秒：道具 · 伞从男主后面打开/);
   assert.match(text, /补充要求：\n伞升至两人头顶/);
 });
+
+test("adds the pinned scene as an image input and keeps the video first frame first", () => {
+  const scene = { name: "雨夜站棚", edition: 1, description: "暖色灯与积水", image: { file: "/scene.png" } };
+  const shot = { id: "empty", title: "车灯", duration: 4 };
+  const still = shotPrompt({ type: "image", shot, references: [], scene });
+  assert.match(still.text, /暖色灯与积水/);
+  assert.deepEqual(still.assets.map(({ file, optional }) => [file, optional]), [["/scene.png", false]]);
+  const frame = { type: "image", status: "approved", shot: shot.id, title: "车灯首帧", file: "/frame.png" };
+  const video = shotPrompt({ type: "video", shot, references: [], scene, frame });
+  assert.deepEqual(video.assets.map(({ file, optional }) => [file, Boolean(optional)]), [["/frame.png", false], ["/scene.png", true]]);
+});

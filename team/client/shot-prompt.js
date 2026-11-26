@@ -1,6 +1,6 @@
 export const angles = { front: "正面", side: "侧面", full: "全身" };
 
-export function shotPrompt({ shot, type, references, frame, from, directive }) {
+export function shotPrompt({ shot, type, references, scene, frame, from, directive }) {
   const video = type === "video";
   if (video && (frame?.type !== "image" || frame.status !== "approved" || frame.shot !== shot.id)) {
     throw new Error("先为当前镜头确认关键帧，再复制视频提示词。");
@@ -19,6 +19,11 @@ export function shotPrompt({ shot, type, references, frame, from, directive }) {
     });
     return ref.name + "（第 " + ref.edition + " 版，" + view + "参考）"
       + "\n身份特征：" + ref.identity + "\n服装设定：" + ref.outfit;
+  });
+
+  if (scene?.image?.file) assets.push({
+    file: scene.image.file, label: "图 " + (assets.length + 1) + " · 场景参考 · " + scene.name + " · 第 " + scene.edition + " 版",
+    optional: video,
   });
 
   const note = from?.note?.trim();
@@ -40,8 +45,9 @@ export function shotPrompt({ shot, type, references, frame, from, directive }) {
     "镜头：" + shot.title + (context ? "\n分镜要求：\n" + context : ""),
     identities.length ? "角色一致性：\n" + identities.join("\n\n")
       + "\n左右均以角色本人为准。被遮挡的一侧不应凭空出现发夹、疤痕等标志性细节。" : "",
+    scene ? "场景一致性：\n" + scene.name + "（第 " + scene.edition + " 版）\n" + scene.description : "",
     assets.length ? "素材顺序：\n" + assets.map(({ label, optional }) => label +
-      (optional ? "（工具支持角色参考时附加；单首帧模式只上传图 1）" : "")).join("\n") : "",
+      (optional ? "（工具支持额外参考图时附加；单首帧模式只上传图 1）" : "")).join("\n") : "",
     note ? "返工要求（优先修复）：\n" + note : "",
     issues.length ? "原版问题定位：\n" + issues.join("\n") : "",
     custom && custom !== note && custom !== context ? "补充要求：\n" + custom : "",
