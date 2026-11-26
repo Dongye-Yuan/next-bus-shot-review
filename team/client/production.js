@@ -1,4 +1,4 @@
-import { castNames, settingDraft, settingFields, locationDescription, normalizeSettings, qualityCategories, qualityOutcomes, repairFindings, packageInputFormat, packageResultFormat } from "./board-data.js";
+import { castNames, normalizedName, missingCast, settingDraft, settingFields, locationDescription, normalizeSettings, qualityCategories, qualityOutcomes, repairFindings, packageInputFormat, packageResultFormat } from "./board-data.js";
 import { angles, shotPrompt } from "./shot-prompt.js";
 const features = ["脸型", "发型", "标志性特征", "服装", "其他"];
 const imageTypes = "image/jpeg,image/png,image/webp";
@@ -62,12 +62,16 @@ export function setupProduction({ $, element, button, context, commit, modelSett
   const content = $("production-body");
   const notice = $("production-notice");
   let working = false;
+  let jobTimer;
+  let dialogPage = 0;
   function message(text = "", error = false) {
     notice.textContent = text;
     notice.classList.toggle("error", error);
     notice.hidden = !text;
   }
   function open(title, wide = false) {
+    clearTimeout(jobTimer);
+    dialogPage++;
     message();
     dialog.classList.toggle("visual-board-dialog", wide);
     content.replaceChildren();
@@ -408,8 +412,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     if (!availableScenes.length) content.append(button("打开场景参考", showScenes));
     const row = shot.storyboard;
     const saved = config().shots[shot.id] ?? {};
-    const upper = (value) => value.trim().normalize("NFKC").toLowerCase();
-    const latestNamed = (list, name) => list.filter((item) => upper(item.name) === upper(name))
+    const latestNamed = (list, name) => list.filter((item) => normalizedName(item.name) === normalizedName(name))
       .sort((a, b) => b.edition - a.edition)[0];
     const recommendedRoles = row && [...new Set(castNames(row.characters))].map((name) => latestNamed(refs, name)).filter(Boolean);
     const recommendedScene = row && latestNamed(availableScenes, row.scene);
@@ -419,12 +422,14 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       [item.id, item.name + " · 第 " + item.edition + " 版"])]);
     scene.value = saved.scene !== undefined ? (saved.scene ?? "") : (recommendedScene?.id ?? "");
     form.append(sceneLabel);
+    const assignedIds = new Set((saved.references ?? []).map(({ reference }) => reference));
+    const suggested = (recommendedRoles || []).filter(({ id }) => !assignedIds.has(id));
     const slots = [0, 1, 2].map((index) => {
       const assigned = saved.references?.[index];
       const fields = element("div", "", "production-inline");
       const [roleLabel, role] = select("角色 " + (index + 1), [["", "未分配"], ...refs.map((ref) => [ref.id, ref.name + " · 第 " + ref.edition + " 版"])]);
       const [angleLabel, angle] = select("参考视角", Object.entries(angles));
-      role.value = saved.references ? (assigned?.reference ?? "") : (recommendedRoles?.[index]?.id ?? "");
+      role.value = assigned?.reference ?? suggested.shift()?.id ?? "";
       const framing = row?.framing ?? "";
       angle.value = assigned?.angle ?? (/侧[面脸]/.test(framing) ? "side" : /全景|背影|背面|全身/.test(framing) ? "full" : "front");
       fields.append(roleLabel, angleLabel);
@@ -538,6 +543,8 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     return box;
   }
 
+  const canGenerate = (type) => context().capabilities[type === "image" ? "imageGeneration" : "videoGeneration"];
+
   function preparation(shot, type, from, reuse = true) {
     open(from ? "镜头返工" : type === "image" ? "生成关键帧" : "生成视频");
     const references = bindings(shot.id).map(({ reference, angle }) => ({ ref: findRef(reference), angle }))
@@ -573,16 +580,17 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     }
     if (type === "video") content.append(element("p", "将使用关键帧 · " + (videoReady ? frame.title : "暂未确认"), "context"));
     const needsRoles = castNames(shot.storyboard?.characters).length > 0;
-    if (!references.length && needsRoles) content.append(element("p", "此分镜有人物入镜，请先绑定角色参考。", "context"));
+    const missing = missingCast(shot, references);
+    if (missing.length) content.append(element("p", "待绑定角色 · " + missing.join("、"), "context"));
     if (scene) content.append(element("p", "将使用场景 · " + scene.name + " 第 " + scene.edition + " 版", "context"));
     const form = element("form", "", "production-form");
     const [label, prompt] = field("生成或返工提示", "textarea", { rows: 4, maxLength: 1400,
       value: from?.repairPlan?.note || from?.note || shot.context });
     form.append(label);
-    if (context().capabilities.generation) {
+    if (canGenerate(type)) {
       const submit = element("button", "提交站内生成", "pick");
       submit.type = "submit";
-      submit.disabled = (!references.length && (needsRoles || !scene)) || !videoReady;
+      submit.disabled = missing.length > 0 || (!references.length && (needsRoles || !scene)) || !videoReady;
       prompt.required = true;
       form.append(submit, element("p", "提交会把此镜头的素材和提示发送给 fal，按你的服务账户计费。", "context"));
       form.onsubmit = (event) => {
@@ -592,6 +600,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       };
     } else {
       form.onsubmit = (event) => event.preventDefault();
+      form.append(element("p", (type === "image" ? "图片" : "视频") + "生成服务待配置。下方可复制提示词并导入生成结果。", "context"));
     }
     content.append(form, externalPrompt({ shot, type, from, frame, references, scene, reuse, instruction: prompt, videoReady }));
   }
@@ -599,14 +608,37 @@ export function setupProduction({ $, element, button, context, commit, modelSett
   function showJobs(shot) {
     open("单镜头生成任务");
     const jobs = config().jobs.filter((job) => job.shot === shot.id).slice(-12).reverse();
+    const active = jobs.find((job) => canGenerate(job.type) && ["queued", "running"].includes(job.status));
     if (!jobs.length) content.append(element("p", "此镜头暂无生成任务。", "context"));
+    if (active && writable()) {
+      content.append(element("p", "此窗口打开时自动查询。生成完成后，新素材会进入待审。", "context"));
+      const page = dialogPage;
+      jobTimer = setTimeout(async () => {
+        if (page !== dialogPage || !dialog.open) return;
+        let errorMessage = "";
+        await commit({ kind: "poll", job: active.id }, null, "/api/generation", (text) => { errorMessage = text; });
+        if (page !== dialogPage || !dialog.open) return;
+        showJobs(shot);
+        if (errorMessage) message(errorMessage, true);
+      }, 5500);
+    }
     for (const job of jobs) {
       const card = element("article", "", "production-card");
       card.append(element("h3", (job.type === "image" ? "关键帧" : "视频") + " · " + jobLabels[job.status]));
       if (job.message) card.append(element("p", job.message, "context"));
       if (job.requestId) card.append(element("p", "服务任务 ID · " + job.requestId, "context"));
-      if (writable() && ["queued", "running"].includes(job.status)) {
-        card.append(button("查询并同步结果", () => run({ kind: "poll", job: job.id }, null, "/api/generation", () => showJobs(shot))));
+      if (writable() && canGenerate(job.type) && ["queued", "running"].includes(job.status)) {
+        card.append(button("查询并同步结果", async () => {
+          clearTimeout(jobTimer);
+          if (!await run({ kind: "poll", job: job.id }, null, "/api/generation", () => showJobs(shot)) && dialog.open) {
+            const error = notice.textContent;
+            showJobs(shot);
+            message(error, Boolean(error));
+          }
+        }));
+      }
+      if (job.status === "completed" && findVersion(job.id)) {
+        card.append(button("查看审核版本", () => { dialog.close(); jumpToShot(shot.id); }, "pick"));
       }
       content.append(card);
     }
@@ -744,12 +776,26 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     right.append(frame, element("figcaption", version.type === "image" ? frameLabel + "关键帧" : issue.time + " 秒 · " + frameLabel + "帧"));
     pair.append(left, right);
     content.append(element("p", issue.feature + " · " + issue.note, "context"), pair);
+    const shot = context().clips.find(({ id }) => id === version.shot);
+    if (writable() && shot && !unclear) {
+      if (version.status === "rejected") {
+        content.append(button("打开返工", () => preparation(shot, version.type, version), "pick"));
+      } else {
+        if (context().state.selected[version.shot] === version.id) {
+          content.append(element("p", "此版本正在时间轴中使用，退回后会取消选用。", "context"));
+        }
+        content.append(button("确认问题并退回返工", () =>
+          run({ kind: "review", version: version.id, status: "rejected", note: issue.note }, null, "/api/review",
+            () => preparation(shot, version.type, findVersion(version.id))), "reject"));
+      }
+    }
   }
 
   function inspect(version) {
-    open("检查角色一致性");
-    content.append(element("p", "将已确认角色参考与待检帧发送给 OpenAI。视频抽检 5 帧，结果由创作者复核。", "context"));
-    const start = button("开始一致性检查", async () => {
+    open("AI 检查镜头");
+    content.append(element("p", "将分镜、已绑定的角色参考与待检帧发送给 " + context().capabilities.visionProvider +
+      "。视频抽检 5 帧，疑似角色偏差与画面问题由创作者复核。", "context"));
+    const start = button("开始检查", async () => {
       if (start.disabled) return;
       start.disabled = true;
       $("production-close").disabled = true;
@@ -958,8 +1004,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         element("figcaption", scene.name + " · 第 " + scene.edition + " 版"));
       group.append(figure);
     }
-    const missing = row ? castNames(row.characters).filter((name) =>
-      !roles.some(({ ref }) => ref.name.normalize("NFKC").toLowerCase() === name.normalize("NFKC").toLowerCase())) : [];
+    const missing = missingCast(shot, roles);
     const summary = [
       row && !roles.length && !castNames(row.characters).length ? "空镜 · 无出场角色" : "",
       missing.length ? "未绑定角色 · " + missing.join("、") : "",
@@ -1000,10 +1045,10 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     const findings = element("ul", "", "board-findings");
     for (const version of new Set(versions.filter(Boolean))) {
       const location = (time) => version.type === "video" ? " · " + time + " 秒" : "";
-      for (const check of version.qualityChecks ?? []) {
+      for (const check of [...(version.qualityChecks ?? []), ...(version.visionQuality ?? [])]) {
         if (check.outcome === "pass") continue;
         const item = element("li");
-        item.append(button(qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome] + location(check.time),
+        item.append(button(qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome] + location(check.time) + (check.source === "vision" ? " · AI" : ""),
           () => qualityDetail(version, check, shot)), element("p", check.note, "context"));
         findings.append(item);
       }
@@ -1066,6 +1111,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         if (row.action !== shot.title) card.append(element("p", row.action, "board-action"));
         if (row.dialogue) card.append(element("p", "对白 · " + row.dialogue, "board-action"));
         if (row.costume) card.append(element("p", "服装 · " + row.costume, "context"));
+        if (shot.visualNotes) card.append(element("p", shot.visualNotes, "board-action"));
       } else if (shot.context) card.append(element("p", shot.context, "board-action"));
       card.append(boardReferences(shot), boardFindings(shot, [frame, selected, latest]));
       const actions = element("div", "", "actions board-actions");
@@ -1158,16 +1204,16 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       if (bindings(shot.id).length) {
         actions.append(button("标记问题", () => issueForm(version)));
         actions.append(button("导出检查包", () => checkPackage(version, shot)));
-        if (context().capabilities.vision) actions.append(button("一致性检查", () => inspect(version)));
       }
+      if (context().capabilities.vision) actions.append(button("AI 检查镜头", () => inspect(version)));
       actions.append(button("导入 Colab 检查结果", () => importColab(version)));
       if (version.status === "rejected") actions.append(button("发起返工", () => preparation(shot, version.type, version), "pick"));
     }
     section.append(actions);
     if (version.checkedAt) {
-      const flagged = (version.issues ?? []).some(({ source }) => source === "vision");
+      const flagged = Boolean(version.visionQuality?.length) || (version.issues ?? []).some(({ source }) => source === "vision");
       const pending = version.visionUnclear?.length ?? 0;
-      const result = flagged ? "发现疑似偏差，请复核下方提示。" : "已核对的可见特征未发现明显偏差。";
+      const result = flagged ? "发现疑似偏差，请复核下方提示。" : "待检画面未发现明显偏差。";
       const summary = !flagged && pending ? "" : result;
       section.append(element("p", "AI 已抽检 " + version.checkedFrames + " 帧。" + summary +
         (pending ? "有 " + pending + " 条无法判断，请人工复核。" : ""), "context"));
@@ -1209,10 +1255,10 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       }
       section.append(element("p", version.repairPlan ? "返工清单" : "沿用原版返工清单", "context"), list);
     }
-    for (const check of version.qualityChecks ?? []) {
+    for (const check of [...(version.qualityChecks ?? []), ...(version.visionQuality ?? [])]) {
       const location = version.type === "video" ? check.time + " 秒" : "关键帧";
       const details = element("div", "", "issue-summary");
-      details.append(button(qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome] + " · " + location,
+      details.append(button(qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome] + " · " + location + (check.source === "vision" ? " · AI" : ""),
         () => qualityDetail(version, check, shot)), element("p", check.note, "context"));
       section.append(details);
     }
@@ -1224,6 +1270,6 @@ export function setupProduction({ $, element, button, context, commit, modelSett
   $("project-settings").onclick = showSettings;
   $("production-close").onclick = () => { if (!working) dialog.close(); };
   dialog.addEventListener("cancel", (event) => { if (working || $("production-close").disabled) event.preventDefault(); });
-  dialog.addEventListener("close", () => { content.replaceChildren(); message(); });
+  dialog.addEventListener("close", () => { clearTimeout(jobTimer); dialogPage++; content.replaceChildren(); message(); });
   return { renderShot, versionTools };
 }

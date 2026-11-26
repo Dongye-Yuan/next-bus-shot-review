@@ -208,7 +208,7 @@ test("locks references, preserves evidence and collects the queued repair as a s
   assert.equal((await owner("/api/generation", start)).status, 503);
   assert.equal((await owner("/api/vision", { version: "03-old", revision: 5, frames: [] })).status, 503);
 
-  env.FAL_KEY = "test-generation-key";
+  env.FAL_IMAGE_KEY = "test-image-key";
   env.OPENAI_API_KEY = "test-vision-key";
   const frames = [{ time: 0, image: "data:image/jpeg;base64,YQ==" }];
   let submitted = 0;
@@ -225,6 +225,7 @@ test("locks references, preserves evidence and collects the queued repair as a s
       const text = JSON.stringify({
         issues: [{ reference: ref.id, frame: 0, feature: issue.feature, note: issue.note }],
         unclear: [{ reference: ref.id, frame: 0, feature: "脸型", note: "角度无法核对清楚。" }],
+        quality: [{ frame: 0, category: "props", note: "伞柄弯曲。", fix: "把伞柄改成黑色直柄。" }],
       });
       return Response.json({ status: "completed", output: [{ content: [{ type: "output_text", text }] }] });
     }
@@ -256,6 +257,7 @@ test("locks references, preserves evidence and collects the queued repair as a s
   const detection = await (await owner("/api/vision", { version: "03-old", revision: 5, frames })).json();
   const checked = detection.state.versions.find(({ id }) => id === "03-old");
   assert.deepEqual(checked.issues.map(({ source }) => source), ["manual", "vision"]);
+  assert.equal(checked.visionQuality[0].fix, "把伞柄改成黑色直柄。");
   assert.deepEqual(checked.visionUnclear.map(({ time, feature, reference }) => ({ time, feature, reference })),
     [{ time: 0, feature: "脸型", reference: ref.id }]);
   const queued = await (await owner("/api/generation", { ...start, revision: 6 })).json();
@@ -277,6 +279,10 @@ test("locks references, preserves evidence and collects the queued repair as a s
   assert.equal(locked.state.production.shots["03"].keyframe, job.id);
 
   const motion = { ...start, type: "video", from: undefined, revision: locked.revision };
+  assert.equal(locked.capabilities.imageGeneration, true);
+  assert.equal(locked.capabilities.videoGeneration, false);
+  assert.equal((await owner("/api/generation", motion)).status, 503);
+  env.FAL_VIDEO_KEY = "test-video-key";
   const firstVideo = await (await owner("/api/generation", motion)).json();
   const firstVideoId = firstVideo.state.production.jobs.at(-1).id;
   const videoResult = await (await owner("/api/generation", { kind: "poll", job: firstVideoId })).json();
@@ -660,4 +666,54 @@ test("imports timed findings only for the package target and original role bindi
   assert.deepEqual(version.packageCheck.findings.map(({ time, outcome, angle }) => [time, outcome, angle]),
     [[3.97, "problem", "front"], [5.95, "unclear", "front"]]);
   assert.equal(state.selected["04"], "04-doubao");
+});
+
+test("revises a confirmed shot without changing selection or overwriting the original board", async (t) => {
+  const { db, post } = fixture();
+  t.after(() => db.close());
+  const original = { number: "01", characters: "小满", scene: "雨棚", framing: "近景",
+    action: "小满在雨棚等车。", duration: "4", dialogue: "", costume: "" };
+  const confirmed = await (await post("/api/storyboard", "owner",
+    { kind: "confirm", rows: [original], revision: 0 })).json();
+  const id = confirmed.state.clips.at(-1).id;
+  const row = { ...original, characters: "无人", scene: "车道", action: "两束车灯划过雨幕。" };
+  const revised = await (await post("/api/shots", "owner", {
+    kind: "edit", shot: id, title: "车灯", context: "冷色调", duration: 6, storyboard: row, revision: confirmed.revision,
+  })).json();
+  const clip = revised.state.clips.at(-1);
+  assert.equal(clip.id, id);
+  assert.equal(clip.storyboard.characters, "无人");
+  assert.equal(clip.storyboard.duration, 6);
+  assert.match(clip.context, /场景 · 车道/);
+  assert.match(clip.context, /补充说明 · 冷色调/);
+  assert.equal(revised.state.storyboard.rows[0].scene, "雨棚");
+  assert.deepEqual(revised.state.selected, confirmed.state.selected);
+});
+
+test("shares a configured Gemini service across draft and visual checks", async (t) => {
+  const { db, env, post, send } = fixture();
+  t.after(() => db.close());
+  env.GEMINI_API_KEY = "fixture";
+  env.GEMINI_MODEL = "gemini-fixture-model";
+  const updated = await (await post("/api/storyboard", "owner", { kind: "story", story: "旧站台等车。", revision: 0 })).json();
+  assert.equal(updated.capabilities.visionProvider, "Gemini");
+  assert.equal(updated.capabilities.textDraft, true);
+  let call = 0;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.match(url, /generativelanguage\.googleapis\.com.*gemini-fixture-model:generateContent/);
+    assert.equal(init.headers["x-goog-api-key"], "fixture");
+    const body = JSON.parse(init.body);
+    assert.equal(body.generationConfig.responseMimeType, "application/json");
+    if (++call === 1) assert.equal(body.contents[0].parts[0].text, "旧站台等车。");
+    else assert.equal(body.contents[0].parts.at(-1).inlineData.mimeType, "image/jpeg");
+    const result = call === 1
+      ? { rows: [{ scene: "旧站台", characters: "无人", action: "空站台。", dialogue: "", beat: "等待。" }] }
+      : { issues: [], unclear: [], quality: [{ frame: 0, category: "props", note: "站牌字形扭曲。", fix: "保持站牌笔画稳定。" }] };
+    return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(result) }] } }] });
+  });
+  assert.equal((await post("/api/text-draft", "owner", { kind: "script", revision: 1 })).status, 200);
+  assert.equal((await post("/api/vision", "owner", { version: "01-approved", revision: 1,
+    frames: [{ time: 0, image: "data:image/jpeg;base64,YQ==" }] })).status, 200);
+  const state = (await (await send("/api/state", "viewer")).json()).state;
+  assert.equal(state.versions.find(({ id }) => id === "01-approved").visionQuality[0].category, "props");
 });

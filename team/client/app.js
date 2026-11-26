@@ -1,5 +1,6 @@
 import { moviePlan, renderMovie } from "./movie.js";
 import { setupProduction } from "./production.js";
+import { boardColumns, clipFromBoardRow } from "./board-data.js";
 import { setupStoryboard } from "./storyboard.js";
 
 let clips = [];
@@ -339,7 +340,27 @@ function openEditor(kind, clip) {
   $("editor-heading").textContent = { project: "新建项目", add: "新增镜头", edit: "编辑镜头" }[kind];
   $("editor-title-label").textContent = projectForm ? "片名" : "镜头标题";
   $("editor-title").value = clip?.title ?? "";
-  $("editor-context").value = clip?.context ?? "";
+  const row = clip?.storyboard;
+  const fields = $("editor-storyboard");
+  fields.replaceChildren(element("legend", "分镜字段"));
+  fields.hidden = !row;
+  if (row) {
+    for (const { key, title, limit, optional } of boardColumns.filter(({ key }) => !["duration", "number"].includes(key))) {
+      const label = element("label", title + (optional ? "（选填）" : ""));
+      const field = element(key === "action" || key === "dialogue" ? "textarea" : "input");
+      field.name = key;
+      field.maxLength = limit;
+      field.required = !optional;
+      field.value = row[key] ?? "";
+      if (field.tagName === "TEXTAREA") field.rows = 2;
+      label.append(field);
+      fields.append(label);
+    }
+  }
+  $("editor-context-label").textContent = row ? "补充说明（选填）" : "描述";
+  $("editor-context").value = row
+    ? (clip.visualNotes ?? (clip.context === clipFromBoardRow(row, clip.id).context ? "" : clip.context))
+    : (clip?.context ?? "");
   $("editor-duration").value = clip?.duration ?? 4;
   $("editor-duration").required = !projectForm;
   $("editor-shot-fields").hidden = projectForm;
@@ -378,10 +399,13 @@ $("editor-form").onsubmit = async (event) => {
   $("editor-save").disabled = true;
   const { kind, shot } = editor;
   const title = $("editor-title").value;
+  const structured = $("editor-storyboard");
+  const storyboard = structured.hidden ? undefined :
+    Object.fromEntries(Array.from(structured.querySelectorAll("[name]"), (field) => [field.name, field.value]));
   const saved = kind === "project"
     ? await makeProject(title)
     : await commit({
-      kind, shot, title, context: $("editor-context").value, duration: $("editor-duration").valueAsNumber,
+      kind, shot, title, storyboard, context: $("editor-context").value, duration: $("editor-duration").valueAsNumber,
     }, null, "/api/shots", editorError);
   $("editor-save").disabled = false;
   if (!saved) return;
@@ -742,9 +766,9 @@ $("export-review").onclick = () => {
     activity: state.activity,
     shots: clips.map(({ id, title, duration, context, storyboard }, index) => ({
       id, title, duration, context, storyboard, start: starts[index], selectedVersion: state.selected[id] ?? null,
-      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, visionUnclear, colabCheck, packageCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe }) => ({
+      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, visionUnclear, visionQuality, colabCheck, packageCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe }) => ({
         id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null, reviewedBy: reviewedBy ?? null,
-        checkedAt, checkedFrames, visionUnclear, colabCheck, packageCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe,
+        checkedAt, checkedFrames, visionUnclear, visionQuality, colabCheck, packageCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe,
       })),
     })),
   };

@@ -178,7 +178,8 @@
       <label id="editor-title-label" for="editor-title">标题</label>
       <input id="editor-title" maxlength="100" required>
       <div id="editor-shot-fields">
-        <label for="editor-context">描述</label>
+        <fieldset id="editor-storyboard" hidden><legend>分镜字段</legend></fieldset>
+        <label for="editor-context" id="editor-context-label">描述</label>
         <textarea id="editor-context" maxlength="2000" rows="4"></textarea>
         <label for="editor-duration">预览时长（秒）</label>
         <input id="editor-duration" type="number" min="1" max="300" step="1">

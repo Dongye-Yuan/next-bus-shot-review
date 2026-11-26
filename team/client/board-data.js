@@ -3,6 +3,13 @@ export function castNames(value = "") {
     .filter((name) => name && !/^(无|无人|空镜|无人物|无角色)$/.test(name));
 }
 
+export const normalizedName = (name) => name.trim().normalize("NFKC").toLowerCase();
+
+export function missingCast(shot, references) {
+  const names = new Set(references.map(({ ref }) => normalizedName(ref.name)));
+  return [...new Set(castNames(shot.storyboard?.characters))].filter((name) => !names.has(normalizedName(name)));
+}
+
 export const boardColumns = [
   { key: "number", title: "镜头编号", limit: 24 },
   { key: "characters", title: "出场角色", limit: 120 },
