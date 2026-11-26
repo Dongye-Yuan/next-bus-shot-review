@@ -723,8 +723,8 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     }
   }
 
-  function compare(version, issue) {
-    open("角色参考与问题帧");
+  function compare(version, issue, unclear = false) {
+    open(unclear ? "角色参考与待复核帧" : "角色参考与问题帧");
     const ref = findRef(issue.reference);
     if (!ref) return;
     const pair = element("div", "", "issue-compare");
@@ -732,7 +732,8 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     left.append(image(ref.images[issue.angle].file, ref.name + "参考图"),
       element("figcaption", ref.name + " · 已确认参考 · " + angles[issue.angle]));
     const right = element("figure");
-    const frame = version.type === "image" ? image(version.file, "问题关键帧") : element("video");
+    const frameLabel = unclear ? "待复核" : "问题";
+    const frame = version.type === "image" ? image(version.file, frameLabel + "关键帧") : element("video");
     if (version.type === "video") {
       frame.controls = true;
       frame.playsInline = true;
@@ -740,7 +741,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
       frame.onloadedmetadata = () => { frame.currentTime = Math.min(issue.time, Math.max(0, frame.duration - 0.01)); };
       frame.src = version.file;
     }
-    right.append(frame, element("figcaption", version.type === "image" ? "问题关键帧" : issue.time + " 秒 · 问题帧"));
+    right.append(frame, element("figcaption", version.type === "image" ? frameLabel + "关键帧" : issue.time + " 秒 · " + frameLabel + "帧"));
     pair.append(left, right);
     content.append(element("p", issue.feature + " · " + issue.note, "context"), pair);
   }
@@ -902,6 +903,11 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     return section;
   }
 
+  function unclearLabel(version, finding) {
+    const location = version.type === "video" ? finding.time + " 秒" : "关键帧";
+    return (findRef(finding.reference)?.name ?? "角色") + " · " + location + " · " + finding.feature + " · AI 无法判断";
+  }
+
   function boardFindings(shot, versions) {
     const section = element("section", "", "board-card-section");
     const findings = element("ul", "", "board-findings");
@@ -918,6 +924,12 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         const item = element("li");
         item.append(button((findRef(issue.reference)?.name ?? "角色") + " · " + issue.feature + location(issue.time),
           () => compare(version, issue)), element("p", issue.note, "context"));
+        findings.append(item);
+      }
+      for (const finding of version.visionUnclear ?? []) {
+        const item = element("li");
+        item.append(button(unclearLabel(version, finding), () => compare(version, finding, true)),
+          element("p", finding.note, "context"));
         findings.append(item);
       }
     }
@@ -1063,8 +1075,11 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     section.append(actions);
     if (version.checkedAt) {
       const flagged = (version.issues ?? []).some(({ source }) => source === "vision");
-      section.append(element("p", "AI 已抽检 " + version.checkedFrames + " 帧。" +
-        (flagged ? "请复核下方提示。" : "抽检未发现明显偏差，请按需人工复核。"), "context"));
+      const pending = version.visionUnclear?.length ?? 0;
+      const result = flagged ? "发现疑似偏差，请复核下方提示。" : "已核对的可见特征未发现明显偏差。";
+      const summary = !flagged && pending ? "" : result;
+      section.append(element("p", "AI 已抽检 " + version.checkedFrames + " 帧。" + summary +
+        (pending ? "有 " + pending + " 条无法判断，请人工复核。" : ""), "context"));
     }
     if (version.colabCheck) {
       const check = version.colabCheck;
@@ -1080,6 +1095,11 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         (issue.source === "colab" ? " · AI 提示（Colab）" : issue.source === "vision" ? " · AI 提示" : " · 人工");
       const details = element("div", "", "issue-summary");
       details.append(button(label, () => compare(version, issue)), element("p", issue.note, "context"));
+      section.append(details);
+    }
+    for (const finding of version.visionUnclear ?? []) {
+      const details = element("div", "", "issue-summary");
+      details.append(button(unclearLabel(version, finding), () => compare(version, finding, true)), element("p", finding.note, "context"));
       section.append(details);
     }
     const checklist = version.repairPlan ?? version.repairOrigin;

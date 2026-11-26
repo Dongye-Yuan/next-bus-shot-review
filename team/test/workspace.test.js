@@ -221,7 +221,11 @@ test("locks references, preserves evidence and collects the queued repair as a s
       const input = JSON.parse(init.body);
       assert.equal(input.store, false);
       assert.equal(input.input[0].content.filter(({ type }) => type === "input_image").length, 2);
-      const text = JSON.stringify({ issues: [{ reference: ref.id, frame: 0, feature: issue.feature, note: issue.note }] });
+      assert.deepEqual(input.text.format.schema.properties.unclear.items.properties.frame.enum, [0]);
+      const text = JSON.stringify({
+        issues: [{ reference: ref.id, frame: 0, feature: issue.feature, note: issue.note }],
+        unclear: [{ reference: ref.id, frame: 0, feature: "脸型", note: "角度无法核对清楚。" }],
+      });
       return Response.json({ status: "completed", output: [{ content: [{ type: "output_text", text }] }] });
     }
     if (url.hostname === "queue.fal.run" && init.method === "POST") {
@@ -250,7 +254,10 @@ test("locks references, preserves evidence and collects the queued repair as a s
     } });
   });
   const detection = await (await owner("/api/vision", { version: "03-old", revision: 5, frames })).json();
-  assert.deepEqual(detection.state.versions.find(({ id }) => id === "03-old").issues.map(({ source }) => source), ["manual", "vision"]);
+  const checked = detection.state.versions.find(({ id }) => id === "03-old");
+  assert.deepEqual(checked.issues.map(({ source }) => source), ["manual", "vision"]);
+  assert.deepEqual(checked.visionUnclear.map(({ time, feature, reference }) => ({ time, feature, reference })),
+    [{ time: 0, feature: "脸型", reference: ref.id }]);
   const queued = await (await owner("/api/generation", { ...start, revision: 6 })).json();
   const job = queued.state.production.jobs[0];
   assert.equal(job.status, "queued");

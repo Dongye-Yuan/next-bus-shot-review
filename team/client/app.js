@@ -742,9 +742,9 @@ $("export-review").onclick = () => {
     activity: state.activity,
     shots: clips.map(({ id, title, duration, context, storyboard }, index) => ({
       id, title, duration, context, storyboard, start: starts[index], selectedVersion: state.selected[id] ?? null,
-      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, colabCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe }) => ({
+      versions: state.versions.filter((version) => version.shot === id).map(({ id, title, type, status, note, reviewedAt, reviewedBy, checkedAt, checkedFrames, visionUnclear, colabCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe }) => ({
         id, title, type, status: statuses[status], note, reviewedAt: reviewedAt ?? null, reviewedBy: reviewedBy ?? null,
-        checkedAt, checkedFrames, colabCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe,
+        checkedAt, checkedFrames, visionUnclear, colabCheck, issues, qualityChecks, repairPlan, repairOrigin, replaces, keyframe,
       })),
     })),
   };
