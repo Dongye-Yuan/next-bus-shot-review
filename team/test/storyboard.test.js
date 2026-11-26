@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardSample, clipFromBoardRow, normalizeBoard, parseBoard, parseScript, normalizeScript, scriptPrompt, storyboardPrompt, draftScript, draftBoard } from "../client/board-data.js";
+import { boardSample, clipFromBoardRow, normalizeBoard, parseBoard, parseScript, normalizeScript, scriptPrompt, storyboardPrompt, draftScript, draftBoard, settingDraft, normalizeSettings, locationDescription } from "../client/board-data.js";
 
 test("parses spreadsheet paste and quoted CSV, preserving optional fields and row order", () => {
   const sample = parseBoard(boardSample);
@@ -61,4 +61,26 @@ test("splits confirmed action, preserves scene order and allocates requested tot
   assert.deepEqual(rows.map(({ dialogue }) => dialogue), ["林澈：车到了。", "", ""]);
   assert.equal(rows.reduce((sum, row) => sum + row.duration, 0), 61);
   assert.throws(() => draftBoard(script, { seconds: 1 }), /调整目标总时长/);
+});
+
+test("seeds settings from confirmed evidence and retains creator edits across script updates", () => {
+  const first = { scene: "旧站台", characters: "小满、林澈", action: "小满穿着米白雨衣。棚顶亮着暖黄色长灯。", beat: "等车" };
+  const second = { scene: "旧站台", characters: "小满", action: "桌上放着一封旧信。", beat: "发现信" };
+  const empty = { scene: "雨夜道路", characters: "无人", action: "雨水落在路沿。", beat: "夜雨" };
+  const references = [
+    { name: "林澈", confirmedAt: "old", edition: 1, identity: "左眉浅疤", outfit: "深蓝雨衣" },
+    { name: "林澈", edition: 2, identity: "未确认特征", outfit: "灰衬衫" },
+  ];
+  const original = settingDraft([first, second, empty], { references });
+  assert.deepEqual(original.characters.map(({ name, outfit }) => [name, outfit]), [["小满", "穿着米白雨衣"], ["林澈", "深蓝雨衣"]]);
+  assert.equal(original.characters[0].identity, "");
+  assert.equal(original.characters[0].source.length, 2);
+  assert.equal(original.locations[0].lighting, "棚顶亮着暖黄色长灯");
+  assert.match(locationDescription(original.locations[0]), /桌上放着一封旧信/);
+  const saved = normalizeSettings(original, original);
+  saved.characters[0].outfit = "米白连帽雨衣";
+  const revised = settingDraft([{ ...second, action: "小满穿着黑色雨衣。" }, empty], { previous: saved });
+  assert.deepEqual(revised.characters.map(({ name, outfit }) => [name, outfit]), [["小满", "米白连帽雨衣"]]);
+  assert.throws(() => normalizeSettings(original, revised), /设定条目/);
+  assert.equal(saved.characters[0].source, undefined);
 });

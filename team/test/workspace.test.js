@@ -520,3 +520,38 @@ test("returns optional model drafts without saving or exposing unconfirmed input
   assert.equal(snapshot.revision, 4);
   assert.equal(snapshot.state.storyboard, undefined);
 });
+
+test("persists editable visual settings only against their confirmed script", async (t) => {
+  const { db, post, send, env } = fixture();
+  t.after(() => db.close());
+  const write = (data, role = "owner") => post("/api/storyboard", role, data);
+  const scenes = [{ scene: "旧站台", characters: "小满", action: "抬头看车灯。", dialogue: "", beat: "发现车来" }];
+  const settings = { characters: [{ name: "小满", identity: "栗色短发", outfit: "米白雨衣" }],
+    locations: [{ name: "旧站台", layout: "旧站牌和长椅", lighting: "暖灯", props: "" }] };
+  const save = { kind: "saveSettingsDraft", settings };
+  assert.equal((await write({ ...save, revision: 0 })).status, 400);
+  const confirmed = await (await write({ kind: "confirmScript", scenes, revision: 0 })).json();
+  const scriptAt = confirmed.state.script.confirmed.at;
+  const action = { ...save, revision: 1, scriptAt };
+  assert.equal((await write(action, "viewer")).status, 403);
+  assert.equal((await write({ ...action, scriptAt: "earlier" })).status, 400);
+  assert.equal((await write({ ...action, settings: { ...settings, characters: [{ name: "陌生角色" }] } })).status, 400);
+  const saved = await (await write(action)).json();
+  assert.deepEqual(saved.state.settingsDraft.characters, settings.characters);
+  assert.equal(saved.state.settingsDraft.scriptAt, scriptAt);
+  assert.equal((await write(action)).status, 409);
+  const snapshot = await (await send("/api/state", "viewer")).json();
+  assert.deepEqual(snapshot.state.settingsDraft.locations, settings.locations);
+  assert.equal(snapshot.state.production, undefined);
+  assert.equal((await post("/api/text-draft", "owner", { kind: "settings", revision: 2 })).status, 503);
+  env.STORY_DRAFT_OPENAI_KEY = "fixture";
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    const request = JSON.parse(init.body);
+    assert.equal(request.store, false);
+    assert.deepEqual(JSON.parse(request.input), { scenes, characters: ["小满"], locations: ["旧站台"] });
+    return Response.json({ status: "completed", output: [{ content: [{ type: "output_text", text: JSON.stringify(settings) }] }] });
+  });
+  const result = await (await post("/api/text-draft", "owner", { kind: "settings", revision: 2 })).json();
+  assert.deepEqual(result.settings, settings);
+  assert.equal((await (await send("/api/state", "owner")).json()).revision, 2);
+});

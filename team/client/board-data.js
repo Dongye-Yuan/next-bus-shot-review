@@ -303,3 +303,84 @@ export function draftBoard(scenes, options) {
   const durations = rows.map((_, index) => Math.floor((index + 1) * seconds / rows.length) - Math.floor(index * seconds / rows.length));
   return normalizeBoard(rows.map((row, index) => ({ ...row, duration: String(durations[index]) })));
 }
+
+export const settingFields = {
+  characters: [
+    { key: "identity", title: "外观与身份特征", limit: 600 },
+    { key: "outfit", title: "服装设定", limit: 300 },
+  ],
+  locations: [
+    { key: "layout", title: "空间布局", limit: 300 },
+    { key: "lighting", title: "光线与色调", limit: 200 },
+    { key: "props", title: "固定道具与环境细节", limit: 250 },
+  ],
+};
+
+const settingName = (name) => name.trim().normalize("NFKC").toLowerCase();
+
+function explicitSetting(group, name, key, sources) {
+  const snippets = sources.flatMap(({ action }) => action.split(/[。！？；;，,\n]/u).map((part) => part.trim()));
+  if (group === "characters") {
+    const words = key === "outfit" ? ["身穿", "穿着"] : ["留着", "戴着", "佩戴", "有一处"];
+    for (const part of snippets) {
+      const detail = part.startsWith(name) ? part.slice(name.length).trim() : "";
+      if (detail.length <= 90 && words.some((word) => detail.startsWith(word))) return detail;
+    }
+    return "";
+  }
+  const starters = {
+    layout: /^(?:场景布局|空间布局|入口|走廊|站台边缘|站棚内)[：:]?/u,
+    lighting: /^(?:光线|灯光|色调|棚顶亮着|室内亮着|窗外透进)[：:]?/u,
+    props: /^(?:固定道具|墙边摆着|桌上放着|角落摆着)[：:]?/u,
+  };
+  return snippets.find((part) => part.length <= 120 && starters[key].test(part)) ?? "";
+}
+
+export function settingDraft(scenes, { previous, references = [], locations = [] } = {}) {
+  const confirmed = normalizeScript(scenes, true);
+  const entries = { characters: new Map(), locations: new Map() };
+  const add = (category, name, scene, index) => {
+    const key = settingName(name);
+    const group = entries[category];
+    if (!group.has(key)) {
+      const existing = previous?.[category]?.find((row) => settingName(row.name) === key);
+      const library = (category === "characters" ? references : locations)
+        .filter((ref) => ref.confirmedAt && settingName(ref.name) === key)
+        .sort((a, b) => b.edition - a.edition)[0];
+      const known = category === "characters"
+        ? { identity: library?.identity, outfit: library?.outfit }
+        : { layout: library?.description?.slice(0, 300) };
+      const fields = Object.fromEntries(settingFields[category].map(({ key: field }) =>
+        [field, existing?.[field] ?? known[field] ?? null]));
+      group.set(key, { name, ...fields, source: [] });
+    }
+    const item = group.get(key);
+    if (item.source.some((source) => source.index === index)) return;
+    item.source.push({ index, scene: scene.scene, action: scene.action });
+  };
+  for (const [index, scene] of confirmed.entries()) {
+    add("locations", scene.scene, scene, index);
+    for (const name of castNames(scene.characters)) add("characters", name, scene, index);
+  }
+  return Object.fromEntries(Object.entries(entries).map(([group, byName]) => [group, [...byName.values()].map((item) => {
+    for (const { key } of settingFields[group]) item[key] ??= explicitSetting(group, item.name, key, item.source);
+    return item;
+  })]));
+}
+
+export function normalizeSettings(input, source) {
+  return Object.fromEntries(Object.entries(settingFields).map(([group, fields]) => {
+    const rows = input?.[group];
+    if (!Array.isArray(rows) || rows.length !== source[group].length) throw new Error("设定条目须与已确认剧本一致。");
+    const byName = new Map(rows.map((row) => [row?.name, row]));
+    return [group, source[group].map(({ name }) => {
+      if (!byName.has(name)) throw new Error("设定条目须与已确认剧本一致。");
+      return { name, ...normalizeTextRow(byName.get(name), fields.map((field) => ({ ...field, optional: true })), name, true) };
+    })];
+  }));
+}
+
+export function locationDescription(location) {
+  return settingFields.locations.filter(({ key }) => location[key]?.trim())
+    .map(({ key, title }) => title + "：" + location[key].trim()).join("\n");
+}

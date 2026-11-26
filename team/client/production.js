@@ -1,4 +1,4 @@
-import { castNames } from "./board-data.js";
+import { castNames, settingDraft, settingFields, locationDescription, normalizeSettings } from "./board-data.js";
 import { angles, shotPrompt } from "./shot-prompt.js";
 const features = ["脸型", "发型", "标志性特征", "服装", "其他"];
 const imageTypes = "image/jpeg,image/png,image/webp";
@@ -57,7 +57,7 @@ async function sampledFrames(version) {
   }
 }
 
-export function setupProduction({ $, element, button, context, commit, checkFile }) {
+export function setupProduction({ $, element, button, context, commit, modelSettings, checkFile }) {
   const dialog = $("production-dialog");
   const content = $("production-body");
   const notice = $("production-notice");
@@ -151,12 +151,12 @@ export function setupProduction({ $, element, button, context, commit, checkFile
       content.append(card);
     }
   }
-  function newReference(suggestedName = "") {
+  function newReference(suggestedName = "", settings = {}) {
     open("新增角色参考版本");
     const form = element("form", "", "production-form");
     const [nameLabel, name] = field("角色名", "input", { required: true, maxLength: 80, value: suggestedName });
-    const [identityLabel, identity] = field("身份特征（脸型、发型、标志性特征）", "textarea", { required: true, maxLength: 600, rows: 3 });
-    const [outfitLabel, outfit] = field("本版服装", "input", { required: true, maxLength: 300 });
+    const [identityLabel, identity] = field("身份特征（脸型、发型、标志性特征）", "textarea", { required: true, maxLength: 600, rows: 3, value: settings.identity ?? "" });
+    const [outfitLabel, outfit] = field("本版服装", "input", { required: true, maxLength: 300, value: settings.outfit ?? "" });
     form.append(nameLabel, identityLabel, outfitLabel);
     const files = Object.entries(angles).map(([key, label]) => {
       const [wrapper, input] = field(label + "图（最大 3 MB）", "input", { type: "file", accept: imageTypes, required: true });
@@ -186,6 +186,137 @@ export function setupProduction({ $, element, button, context, commit, checkFile
         save.disabled = false;
       }
     };
+    content.append(form);
+  }
+
+  let settingsEditor;
+
+  function showSettings() {
+    open("角色与场景设定草稿");
+    const { project, state, capabilities } = context();
+    const script = state.script?.confirmed;
+    const saved = state.settingsDraft;
+    const resetEditor = () => {
+      settingsEditor = { project, scriptAt: saved?.scriptAt, draft: saved ? structuredClone(saved) : null,
+        storedAt: saved?.updatedAt, dirty: false };
+    };
+    if (settingsEditor?.project !== project || (!settingsEditor.dirty && settingsEditor.storedAt !== saved?.updatedAt)) resetEditor();
+    const editor = settingsEditor;
+    const stale = editor.draft && editor.scriptAt !== script?.at;
+    const conflicting = editor.dirty && editor.storedAt !== saved?.updatedAt;
+    const referenceInputs = () => ({ previous: editor.draft, references: config().references, locations: scenes() });
+    function useDraft(draft) {
+      editor.draft = draft;
+      editor.scriptAt = script.at;
+      editor.dirty = true;
+      showSettings();
+      message("设定草稿已生成，可以继续编辑。");
+    }
+    if (script?.scenes.length && writable()) {
+      const actions = element("div", "", "actions");
+      actions.append(button(editor.draft ? "按已确认剧本更新条目" : "从已确认剧本起草", () => {
+        try { useDraft(settingDraft(script.scenes, referenceInputs())); }
+        catch (error) { message(error.message, true); }
+      }, "pick"));
+      if (capabilities.textDraft) {
+        actions.append(button("用文字模型补写空白设定", () => {
+          const confirmation = element("div", "", "actions");
+          confirmation.append(element("p", "此操作会把已确认剧本发送给文字服务。已有设定保留。", "context"),
+            button("发送并生成", async () => {
+              if (working) return;
+              working = true;
+              content.inert = true;
+              try {
+                const { settings } = await modelSettings();
+                const baseline = settingDraft(script.scenes, referenceInputs());
+                for (const [group, fields] of Object.entries(settingFields)) {
+                  const supplements = new Map(settings[group].map((row) => [row.name, row]));
+                  for (const row of baseline[group]) {
+                    for (const { key } of fields) {
+                      if (!row[key]?.trim()) row[key] = supplements.get(row.name)?.[key] ?? "";
+                    }
+                  }
+                }
+                useDraft(baseline);
+              } catch (error) {
+                message(error.message, true);
+              } finally {
+                content.inert = false;
+                working = false;
+              }
+            }), button("取消", () => confirmation.remove()));
+          if (!actions.nextElementSibling?.classList.contains("settings-model-confirm")) {
+            confirmation.classList.add("settings-model-confirm");
+            actions.after(confirmation);
+          }
+        }));
+      }
+      content.append(actions);
+    }
+    if (!script?.scenes.length) content.append(element("p", "请先在「故事与分镜」里确认剧本。", "context"));
+    else if (!editor.draft) content.append(element("p", "按剧本列出角色和场景，并带入同名的已确认参考。其他外观、服装和环境设定可手动填写。", "context"));
+    if (!editor.draft) return;
+    if (conflicting) {
+      content.append(element("p", "团队已保存更新的设定。可以查看当前编辑内容，或重新载入已保存稿后继续修改。", "context"),
+        button("放弃本次编辑并载入已保存稿", () => { resetEditor(); showSettings(); }));
+    }
+    if (stale) content.append(element("p", "剧本有新确认稿。更新条目时会保留同名设定，按新剧本移除已不出场的条目。", "context"));
+    const form = element("form", "", "production-form");
+    const fresh = script?.scenes.length && !stale ? settingDraft(script.scenes, referenceInputs()) : null;
+    for (const [group, fields] of Object.entries(settingFields)) {
+      form.append(element("h3", group === "characters" ? "角色" : "场景"));
+      if (!editor.draft[group].length) form.append(element("p", "已确认剧本没有人物出场。", "context"));
+      for (const row of editor.draft[group]) {
+        const card = element("article", "", "production-card");
+        card.append(element("h4", row.name));
+        const sources = fresh?.[group].find(({ name }) => name === row.name)?.source ?? [];
+        if (sources.length) {
+          const evidence = element("details");
+          evidence.append(element("summary", "查看剧本来源（" + sources.length + " 场）"));
+          for (const { index, scene, action } of sources) {
+            evidence.append(element("p", "第 " + (index + 1) + " 场 · " + scene + " · " + action, "context"));
+          }
+          card.append(evidence);
+        }
+        for (const { key, title, limit } of fields) {
+          const [label, input] = field(row.name + " · " + title, "textarea", {
+            rows: 2, maxLength: limit, readOnly: !writable() || Boolean(stale), value: row[key] ?? "",
+          });
+          input.oninput = () => {
+            row[key] = input.value;
+            editor.dirty = true;
+          };
+          card.append(label);
+        }
+        if (writable() && !stale) {
+          card.append(button("用于新增" + (group === "characters" ? "角色" : "场景") + "参考", () =>
+            group === "characters" ? newReference(row.name, row)
+              : sceneForm({ name: row.name, description: locationDescription(row) })));
+        }
+        form.append(card);
+      }
+    }
+    if (writable() && !stale && !conflicting) {
+      const save = element("button", "保存设定草稿", "pick");
+      save.type = "submit";
+      form.append(save);
+      form.onsubmit = async (event) => {
+        event.preventDefault();
+        if (working) return;
+        try {
+          const settings = normalizeSettings(editor.draft, fresh);
+          form.inert = true;
+          await run({ kind: "saveSettingsDraft", settings, scriptAt: editor.scriptAt }, null, "/api/storyboard", () => {
+            settingsEditor = null;
+            showSettings();
+          });
+        } catch (error) {
+          message(error.message, true);
+        } finally {
+          form.inert = false;
+        }
+      };
+    }
     content.append(form);
   }
 
@@ -632,6 +763,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
   function renderShot(shot, ready) {
     $("project-references").hidden = !ready;
     $("project-scenes").hidden = !ready;
+    $("project-settings").hidden = !ready;
     $("shot-production").hidden = !shot;
     if (!shot) return;
     const line = $("shot-production-summary");
@@ -699,6 +831,7 @@ export function setupProduction({ $, element, button, context, commit, checkFile
   }
   $("project-references").onclick = showReferences;
   $("project-scenes").onclick = showScenes;
+  $("project-settings").onclick = showSettings;
   $("production-close").onclick = () => { if (!working) dialog.close(); };
   dialog.addEventListener("cancel", (event) => { if (working || $("production-close").disabled) event.preventDefault(); });
   dialog.addEventListener("close", () => { content.replaceChildren(); message(); });
