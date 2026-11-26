@@ -447,7 +447,10 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     });
     const origin = video && frame
       ? element("p", (from ? (reuse ? "沿用关键帧 · " : "更新后关键帧 · ") : "生成用关键帧 · ") + frame.title, "context") : null;
+    const linkFrame = video && from?.type === type && frame;
+    const [association, associate] = field("此视频使用了上述关键帧", "input", { type: "checkbox", checked: true });
     if (origin) form.append(origin);
+    if (linkFrame) form.append(association);
     const save = element("button", "导入为待审", "pick");
     save.type = "submit";
     form.append(label, save);
@@ -466,7 +469,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         upload.set("shot", shot.id);
         upload.set("externalGeneration", "1");
         if (from?.type === type) upload.set("replaces", from.id);
-        if (video && frame) upload.set("keyframe", frame.id);
+        if (video && frame && (!linkFrame || associate.checked)) upload.set("keyframe", frame.id);
         await run(null, upload, "/api/upload", () => dialog.close());
       } catch (error) {
         message(error.message, true);
@@ -569,7 +572,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     if (scene) content.append(element("p", "将使用场景 · " + scene.name + " 第 " + scene.edition + " 版", "context"));
     const form = element("form", "", "production-form");
     const [label, prompt] = field("生成或返工提示", "textarea", { rows: 4, maxLength: 1400,
-      value: from?.note || shot.context });
+      value: from?.repairPlan?.note || from?.note || shot.context });
     form.append(label);
     if (context().capabilities.generation) {
       const submit = element("button", "提交站内生成", "pick");

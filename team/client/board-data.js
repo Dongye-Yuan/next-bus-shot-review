@@ -396,6 +396,6 @@ export function repairFindings(version) {
   return [...(version.issues ?? []), ...checks].map((item) => {
     const time = version.type === "video" && Number.isFinite(item.time) ? item.time + " 秒：" : "";
     return time + (qualityCategories[item.category] ?? item.feature) + " · " + item.note +
-      (item.fix ? "。修改要求：" + item.fix : "");
+      (item.fix ? (/[。！？.!?]$/.test(item.note) ? " " : "。") + "修改要求：" + item.fix : "");
   });
 }
