@@ -1,4 +1,4 @@
-import { castNames, settingDraft, settingFields, locationDescription, normalizeSettings } from "./board-data.js";
+import { castNames, settingDraft, settingFields, locationDescription, normalizeSettings, qualityCategories, qualityOutcomes, repairFindings } from "./board-data.js";
 import { angles, shotPrompt } from "./shot-prompt.js";
 const features = ["脸型", "发型", "标志性特征", "服装", "其他"];
 const imageTypes = "image/jpeg,image/png,image/webp";
@@ -539,7 +539,17 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     const selected = findVersion(reuse ? (from?.keyframe ?? currentFrame) : currentFrame);
     const frame = selected?.status === "approved" && selected.type === "image" && selected.shot === shot.id ? selected : null;
     const videoReady = type !== "video" || Boolean(frame && (reuse || frame.id !== from?.keyframe));
-    if (from) content.append(element("p", "退回原因 · " + from.note, "context"));
+    if (from) {
+      content.append(element("p", "退回原因 · " + from.note, "context"));
+      const findings = repairFindings(from);
+      if (findings.length) {
+        const list = element("ul");
+        for (const finding of findings) list.append(element("li", finding));
+        const card = element("section", "", "production-card");
+        card.append(element("h3", "返工清单"), list);
+        content.append(card);
+      }
+    }
     if (type === "video" && from) {
       const modes = element("div", "", "actions");
       const same = button("沿用已确认的关键帧", () => preparation(shot, type, from, true));
@@ -617,6 +627,92 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         feature: feature.value, time: Number(time.value), note: note.value }, null, "/api/production", () => dialog.close());
     };
     content.append(form);
+  }
+
+  function reviewMedia(version, time = 0) {
+    if (version.type === "image") return image(version.file, "待复核关键帧");
+    const node = element("video");
+    node.controls = true;
+    node.playsInline = true;
+    node.preload = "metadata";
+    node.onloadedmetadata = () => { node.currentTime = Math.min(time, Math.max(0, node.duration - 0.01)); };
+    node.src = version.file;
+    return node;
+  }
+
+  function qualityForm(version) {
+    open("复核镜头质量");
+    const form = element("form", "", "production-form");
+    const [categoryLabel, category] = select("质量分类", Object.entries(qualityCategories));
+    const [outcomeLabel, outcome] = select("复核结果", Object.entries(qualityOutcomes));
+    outcome.value = "problem";
+    const [roleLabel, reference] = select("对照角色（选填）", [["", "未选择"],
+      ...bindings(version.shot).map(({ reference }) => [reference, findRef(reference)?.name ?? "角色"])]);
+    const [timeLabel, time] = field("证据时间（秒，素材内）", "input",
+      { type: "number", min: 0, max: 300, step: 0.01, value: "0", required: true });
+    const [noteLabel, note] = field("观察记录", "textarea", { required: true, maxLength: 400, rows: 2 });
+    const [fixLabel, fix] = field("修改要求", "textarea", { required: true, maxLength: 400, rows: 2 });
+    const preview = reviewMedia(version);
+    const figure = element("figure", "", "quality-evidence");
+    figure.append(preview, element("figcaption", version.title));
+    form.append(categoryLabel, outcomeLabel, roleLabel, figure);
+    if (version.type === "video") {
+      form.append(timeLabel, button("使用当前播放位置", () => {
+        time.value = String(Math.floor(preview.currentTime * 100) / 100);
+      }));
+      time.onchange = () => {
+        if (Number.isFinite(preview.duration)) preview.currentTime = Math.min(Number(time.value), preview.duration);
+      };
+    }
+    const updateFields = () => {
+      roleLabel.hidden = category.value !== "identity" || !bindings(version.shot).length;
+      fixLabel.hidden = outcome.value !== "problem";
+      fix.required = outcome.value === "problem";
+    };
+    category.onchange = updateFields;
+    outcome.onchange = updateFields;
+    updateFields();
+    const save = element("button", "保存复核记录", "pick");
+    save.type = "submit";
+    form.append(noteLabel, fixLabel, save);
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      if (version.type === "video" && Number.isFinite(preview.duration) && Number(time.value) > preview.duration) {
+        message("证据时间超出素材时长。", true);
+        return;
+      }
+      run({ kind: "saveQualityCheck", version: version.id, shot: version.shot, category: category.value,
+        outcome: outcome.value, reference: roleLabel.hidden ? "" : reference.value, time: Number(time.value),
+        note: note.value, fix: fix.required ? fix.value : "" }, null, "/api/production", () => dialog.close());
+    };
+    content.append(form);
+  }
+
+  function qualityDetail(version, check, shot) {
+    open("镜头复核证据");
+    const pair = element("div", "", "issue-compare");
+    const ref = findRef(check.reference);
+    if (ref?.images[check.angle]) {
+      const fig = element("figure");
+      fig.append(image(ref.images[check.angle].file, ref.name + "参考图"),
+        element("figcaption", ref.name + " · 已确认参考 · " + angles[check.angle]));
+      pair.append(fig);
+    }
+    const figure = element("figure", "", "quality-evidence");
+    figure.append(reviewMedia(version, check.time), element("figcaption",
+      version.title + " · " + (version.type === "video" ? check.time + " 秒" : "关键帧")));
+    pair.append(figure);
+    content.append(element("p", qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome], "context"),
+      element("p", check.note), pair);
+    if (check.fix) content.append(element("p", "修改要求 · " + check.fix));
+    if (writable() && check.outcome === "problem") {
+      if (context().state.selected[version.shot] === version.id) {
+        content.append(element("p", "此版本正在时间轴中使用，退回后会取消选用。", "context"));
+      }
+      content.append(button("按此问题退回并打开返工", () =>
+        run({ kind: "review", version: version.id, status: "rejected", check: check.id }, null, "/api/review",
+          () => preparation(shot, version.type, findVersion(version.id))), "reject"));
+    }
   }
 
   function compare(version, issue) {
@@ -798,6 +894,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         lock.disabled = isLocked;
         actions.append(lock);
       }
+      actions.append(button("复核镜头质量", () => qualityForm(version)));
       if (bindings(shot.id).length) {
         actions.append(button("标记问题", () => issueForm(version)));
         if (context().capabilities.vision) actions.append(button("一致性检查", () => inspect(version)));
@@ -825,6 +922,22 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         (issue.source === "colab" ? " · AI 提示（Colab）" : issue.source === "vision" ? " · AI 提示" : " · 人工");
       const details = element("div", "", "issue-summary");
       details.append(button(label, () => compare(version, issue)), element("p", issue.note, "context"));
+      section.append(details);
+    }
+    const checklist = version.repairPlan ?? version.repairOrigin;
+    if (checklist?.checks.length) {
+      const list = element("ul", "", "repair-summary");
+      for (const item of checklist.checks) {
+        const time = version.type === "video" ? item.time + " 秒 · " : "";
+        list.append(element("li", time + qualityCategories[item.category] + " · " + item.fix));
+      }
+      section.append(element("p", version.repairPlan ? "返工清单" : "沿用原版返工清单", "context"), list);
+    }
+    for (const check of version.qualityChecks ?? []) {
+      const location = version.type === "video" ? check.time + " 秒" : "关键帧";
+      const details = element("div", "", "issue-summary");
+      details.append(button(qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome] + " · " + location,
+        () => qualityDetail(version, check, shot)), element("p", check.note, "context"));
       section.append(details);
     }
     return section;

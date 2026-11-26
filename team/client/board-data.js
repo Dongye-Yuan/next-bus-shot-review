@@ -384,3 +384,18 @@ export function locationDescription(location) {
   return settingFields.locations.filter(({ key }) => location[key]?.trim())
     .map(({ key, title }) => title + "：" + location[key].trim()).join("\n");
 }
+
+export const qualityCategories = {
+  identity: "角色一致性", action: "动作", props: "道具", occlusion: "遮挡", continuity: "场景与衔接", other: "其他",
+};
+export const qualityOutcomes = { pass: "未见异常", problem: "发现问题", unclear: "无法判断" };
+
+export function repairFindings(version) {
+  if (!version) return [];
+  const checks = version.repairPlan?.checks ?? (version.qualityChecks ?? []).filter(({ outcome }) => outcome === "problem");
+  return [...(version.issues ?? []), ...checks].map((item) => {
+    const time = version.type === "video" && Number.isFinite(item.time) ? item.time + " 秒：" : "";
+    return time + (qualityCategories[item.category] ?? item.feature) + " · " + item.note +
+      (item.fix ? "。修改要求：" + item.fix : "");
+  });
+}

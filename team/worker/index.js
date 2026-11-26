@@ -1,4 +1,4 @@
-import { castNames, normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit, boardColumns, scriptColumns, draftBoardOptions, settingDraft, normalizeSettings, settingFields } from "../client/board-data.js";
+import { castNames, normalizeBoard, normalizeScript, clipFromBoardRow, storyLimit, boardColumns, scriptColumns, draftBoardOptions, settingDraft, normalizeSettings, settingFields, qualityCategories, qualityOutcomes, repairFindings } from "../client/board-data.js";
 
 const demoClips = [
   { id: "01", title: "雨夜站棚", duration: 4, context: "双人中景，建立站棚与人物站位。" },
@@ -299,11 +299,20 @@ async function update(request, env, current, user) {
   if (current.revision !== action.revision) return fail("记录已被更新，请重新确认。", 409);
   const version = current.state.versions.find(({ id }) => id === action.version);
   if (!version) return fail("找不到该版本。", 404);
-  const note = typeof action.note === "string" ? action.note.trim() : "";
+  let note = typeof action.note === "string" ? action.note.trim() : "";
+  const check = action.check && version.qualityChecks?.find(({ id, outcome }) => id === action.check && outcome === "problem");
+  if (action.check && (!check || action.kind !== "review" || action.status !== "rejected")) {
+    return fail("请选择该版本中已记录的问题。", 400);
+  }
+  if (check) note = check.fix;
   if (note.length > 500) return fail("备注最多 500 字。", 400);
   if (action.kind === "review") {
     if (!["pending", "approved", "rejected"].includes(action.status)) return fail("审核状态无效。", 400);
     if (action.status === "rejected" && !note) return fail("请先填写退回原因。", 400);
+    if (action.status === "rejected" && (check || !version.repairPlan)) {
+      const checks = check ? [check] : (version.qualityChecks ?? []).filter(({ outcome }) => outcome === "problem");
+      if (checks.length) version.repairPlan = { note, checks, at: new Date().toISOString(), by: user.email };
+    }
     version.note = note;
     version.status = action.status;
     version.reviewedAt = new Date().toISOString();
@@ -346,7 +355,7 @@ async function upload(request, env, current, user) {
   }
   const id = crypto.randomUUID();
   const version = {
-    id, shot, ...(from ? { replaces: from } : {}),
+    id, shot, ...(from ? { replaces: from, repairOrigin: prior?.repairPlan } : {}),
     ...(external ? { generationSource: "external" } : {}),
     ...(from || external ? { references: production(current.state).shots[shot]?.references ?? [] } : {}),
     ...(from || external ? { scene: boundScene(current, shot)?.id } : {}),
@@ -620,6 +629,22 @@ async function editProduction(request, env, current, user) {
     const issue = validatedIssue(current, version, input);
     if (!issue) return fail("请填写已绑定角色、检查项、问题描述和有效时间。", 400);
     (version.issues ??= []).push({ ...issue, source: "manual" });
+  } else if (input.kind === "saveQualityCheck") {
+    if (version?.shot !== clip.id) return fail("找不到该镜头的素材版本。", 404);
+    const { category, outcome } = input;
+    const time = version.type === "image" ? 0 : input.time;
+    const note = typeof input.note === "string" ? input.note.trim() : "";
+    const fix = typeof input.fix === "string" ? input.fix.trim() : "";
+    const ref = input.reference ? assignedReferences(current, clip.id).find(({ ref }) => ref.id === input.reference) : null;
+    if (!Object.hasOwn(qualityCategories, category) || !Object.hasOwn(qualityOutcomes, outcome) ||
+        !Number.isFinite(time) || time < 0 || time > 300 || !note || note.length > 400 ||
+        (outcome === "problem" && !fix) || fix.length > 400 || (input.reference && (!ref || category !== "identity"))) {
+      return fail("请核对复核分类、时间、观察记录和修改要求。", 400);
+    }
+    (version.qualityChecks ??= []).push({
+      id: crypto.randomUUID(), category, outcome, time, note, ...(outcome === "problem" ? { fix } : {}),
+      ...(ref ? { reference: ref.ref.id, angle: ref.angle } : {}), at: new Date().toISOString(), by: user.email,
+    });
   } else if (input.kind === "importColabCheck") {
     if (version?.shot !== clip.id) return fail("找不到该镜头的素材版本。", 404);
     const problem = recordColabCheck(current, version, input, user);
@@ -698,7 +723,10 @@ async function startGeneration(env, current, user, input) {
   const task = input.type === "video" ? "保留首帧身份和服装，生成连续的竖屏动画。"
     : editBase ? "编辑图 1，保留构图场景，按参考图修复问题，输出 9:16。"
       : "按参考图生成 9:16 动画关键帧。";
-  const text = [task, "镜头要求：" + prompt, from?.note && "返工原因：" + from.note, description,
+  const findings = repairFindings(from);
+  const repairNote = from?.repairPlan?.note || from?.note;
+  const text = [task, repairNote && "返工原因：" + repairNote,
+    findings.length && "原版问题定位：\n" + findings.join("\n"), "镜头要求：" + prompt, description,
     scene && "场景参考（第 " + scene.edition + " 版）：" + scene.name + "。 " + scene.description,
     "分镜：" + clip.context].filter(Boolean).join("\n").slice(0, input.type === "video" ? 2400 : 4800);
   let body;
@@ -717,7 +745,7 @@ async function startGeneration(env, current, user, input) {
   }
   const job = {
     id: crypto.randomUUID(), shot: clip.id, type: input.type, status: "submitting",
-    from: from?.id, keyframe: input.type === "video" ? frame.id : undefined,
+    from: from?.id, repairPlan: from?.repairPlan, keyframe: input.type === "video" ? frame.id : undefined,
     references: refs.map(({ ref, angle }) => ({ reference: ref.id, angle })),
     scene: scene?.id, createdAt: new Date().toISOString(), provider: "fal",
   };
@@ -795,7 +823,7 @@ async function pollGeneration(env, current, user, id) {
     const version = {
       id: job.id, shot: job.shot, title: job.type === "image" ? "AI 关键帧" : "AI 视频",
       file: mediaPath(current.project, job.id), type: job.type, status: "pending", note: "",
-      keyframe: job.keyframe, replaces: job.from, references: job.references, scene: job.scene, generatedAt: new Date().toISOString(),
+      keyframe: job.keyframe, replaces: job.from, repairOrigin: job.repairPlan, references: job.references, scene: job.scene, generatedAt: new Date().toISOString(),
     };
     current.state.versions.push(version);
     job.status = "completed";

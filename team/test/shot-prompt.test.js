@@ -43,3 +43,13 @@ test("adds the pinned scene as an image input and keeps the video first frame fi
   const video = shotPrompt({ type: "video", shot, references: [], scene, frame });
   assert.deepEqual(video.assets.map(({ file, optional }) => [file, Boolean(optional)]), [["/frame.png", false], ["/scene.png", true]]);
 });
+
+test("uses the selected quality evidence and repair instruction in an external prompt", () => {
+  const problem = { category: "props", outcome: "problem", time: 3.2, note: "伞柄变形", fix: "保持直柄" };
+  const shot = { id: "04", title: "开伞", duration: 5 };
+  const frame = { type: "image", status: "approved", shot: shot.id, file: "/frame.png", title: "首帧" };
+  const from = { type: "video", note: "更新后的备注", repairPlan: { note: "保持直柄", checks: [problem] } };
+  const { text } = shotPrompt({ shot, type: "video", references: [], frame, from });
+  assert.match(text, /3\.2 秒：道具 · 伞柄变形。修改要求：保持直柄/);
+  assert.match(text, /返工要求（优先修复）：\n保持直柄/);
+});

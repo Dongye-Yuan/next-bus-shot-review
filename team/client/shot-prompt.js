@@ -1,3 +1,5 @@
+import { repairFindings } from "./board-data.js";
+
 export const angles = { front: "正面", side: "侧面", full: "全身" };
 
 export function shotPrompt({ shot, type, references, scene, frame, from, directive }) {
@@ -26,13 +28,10 @@ export function shotPrompt({ shot, type, references, scene, frame, from, directi
     optional: video,
   });
 
-  const note = from?.note?.trim();
+  const note = (from?.repairPlan?.note || from?.note)?.trim();
   const custom = directive?.trim();
   const context = shot.context?.trim();
-  const issues = (from?.issues ?? []).map((issue) => {
-    const time = from.type === "video" && Number.isFinite(issue.time) ? issue.time + " 秒：" : "";
-    return time + issue.feature + " · " + issue.note;
-  });
+  const issues = repairFindings(from);
   const direction = video
     ? [
       "生成一条 9:16 竖屏视频，目标 " + shot.duration + " 秒。用图 1 作为第一帧。按分镜的机位、景别和动作推进，保持一个连续镜头。",

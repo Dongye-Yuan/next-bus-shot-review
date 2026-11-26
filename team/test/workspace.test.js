@@ -555,3 +555,38 @@ test("persists editable visual settings only against their confirmed script", as
   assert.deepEqual(result.settings, settings);
   assert.equal((await (await send("/api/state", "owner")).json()).revision, 2);
 });
+
+test("keeps quality evidence and its chosen repair checklist through external replacement", async (t) => {
+  const { db, send, post, origin } = fixture();
+  t.after(() => db.close());
+  const check = { kind: "saveQualityCheck", shot: "04", version: "04-failed", category: "props", outcome: "problem",
+    time: 3.2, note: "伞柄弯曲变形", fix: "保持一根黑色直柄" };
+  assert.equal((await post("/api/production", "viewer", { ...check, revision: 0 })).status, 403);
+  assert.equal((await post("/api/production", "owner", { ...check, fix: "", revision: 0 })).status, 400);
+  const sendCheck = (fields, revision) => post("/api/production", "owner", { ...check, ...fields, revision });
+  await sendCheck({ outcome: "unclear", category: "identity", note: "脸被伞挡住", fix: "" }, 0);
+  const marked = await (await sendCheck({}, 1)).json();
+  const original = marked.state.versions.find(({ id }) => id === "04-failed");
+  const [unclear, problem] = original.qualityChecks;
+  const reject = (ref, revision) => post("/api/review", "owner", {
+    kind: "review", status: "rejected", version: original.id, check: ref, revision,
+  });
+  assert.equal((await reject(unclear.id, 2)).status, 400);
+  const returned = await (await reject(problem.id, 2)).json();
+  const selected = returned.state.versions.find(({ id }) => id === original.id);
+  assert.equal(selected.note, check.fix);
+  assert.deepEqual(selected.repairPlan.checks, [problem]);
+  assert.equal(returned.state.selected["04"], "04-doubao");
+  const form = new FormData();
+  for (const [name, val] of Object.entries({ revision: "3", shot: "04", replaces: original.id, externalGeneration: "1" })) form.set(name, val);
+  form.set("file", new File(["candidate"], "opening.mp4", { type: "video/mp4" }));
+  const reply = await send("/api/upload", "owner", { method: "POST", headers: { Origin: origin }, body: form });
+  assert.equal(reply.status, 200);
+  const state = (await reply.json()).state;
+  const candidate = state.versions.at(-1);
+  assert.equal(candidate.status, "pending");
+  assert.equal(candidate.replaces, original.id);
+  assert.deepEqual(candidate.repairOrigin, selected.repairPlan);
+  assert.equal(candidate.repairPlan, undefined);
+  assert.equal(state.versions.find(({ id }) => id === original.id).status, "rejected");
+});
