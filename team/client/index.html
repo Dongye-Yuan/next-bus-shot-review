@@ -17,6 +17,7 @@
     <label for="project-select">当前项目</label>
     <select id="project-select" disabled></select>
     <button id="open-storyboard" type="button" hidden>故事与分镜</button>
+    <button id="visual-board" type="button" hidden>可视化分镜板</button>
     <button id="project-references" type="button" hidden>角色参考</button>
     <button id="project-scenes" type="button" hidden>场景参考</button>
     <button id="project-settings" type="button" hidden>角色与场景设定</button>
@@ -156,7 +157,7 @@
     </section>
   </dialog>
   <dialog id="production-dialog" class="production-dialog" aria-labelledby="production-title">
-    <div class="section-head"><h2 id="production-title"></h2><button id="production-close" type="button">关闭</button></div>
+    <div class="section-head"><h2 id="production-title" tabindex="-1"></h2><button id="production-close" type="button">关闭</button></div>
     <p id="production-notice" class="notice" role="status" hidden></p>
     <div id="production-body"></div>
   </dialog>

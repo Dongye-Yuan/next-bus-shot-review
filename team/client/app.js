@@ -789,11 +789,17 @@ async function openProject(project) {
 }
 $("project-select").onchange = (event) => openProject(event.target.value);
 $("refresh-team").onclick = () => openProject();
-const productionUI = setupProduction({ $, element, button, context: () => ({ state, role, capabilities, project: activeProject }),
+function jumpToShot(id) {
+  selectShot(id);
+  seekTo(clipStart(id));
+  $("shot-title").focus();
+}
+const productionUI = setupProduction({ $, element, button, context: () => ({ state, role, clips, capabilities, project: activeProject }),
+  jumpToShot,
   commit, modelSettings: () => post(scopedPath("/api/text-draft"), { kind: "settings", revision }), checkFile: validateAsset });
 setupStoryboard({ $, element, button, context: () => ({ state, role, clips, capabilities }), commit,
   modelDraft: (kind, options) => post(scopedPath("/api/text-draft"), { kind, ...options, revision }),
-  jumpToShot: (id) => { selectShot(id); seekTo(clipStart(id)); $("shot-title").focus(); } });
+  jumpToShot });
 renderReview();
 showPreview();
 openProject();

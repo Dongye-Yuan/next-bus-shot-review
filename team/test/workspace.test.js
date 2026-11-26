@@ -590,3 +590,29 @@ test("keeps quality evidence and its chosen repair checklist through external re
   assert.equal(candidate.repairPlan, undefined);
   assert.equal(state.versions.find(({ id }) => id === original.id).status, "rejected");
 });
+
+test("can confirm a substitute keyframe without changing approved history or selected playback", async (t) => {
+  const { db, send, post, origin } = fixture();
+  t.after(() => db.close());
+  const shot = "03";
+  const locked = await (await post("/api/production", "owner",
+    { kind: "lockFrame", shot, version: "03-fixed", revision: 0 })).json();
+  const form = new FormData();
+  form.set("revision", String(locked.revision));
+  form.set("shot", shot);
+  form.set("externalGeneration", "1");
+  form.set("file", new File(["new still"], "alternate.png", { type: "image/png" }));
+  const uploaded = await (await send("/api/upload", "owner",
+    { method: "POST", headers: { Origin: origin }, body: form })).json();
+  const version = uploaded.state.versions.at(-1).id;
+  const confirm = (revision) => post("/api/production", "owner", { kind: "lockFrame", shot, version, revision });
+  assert.equal(uploaded.state.production.shots[shot].keyframe, "03-fixed");
+  assert.equal((await confirm(uploaded.revision)).status, 400);
+  const approved = await (await post("/api/review", "owner",
+    { kind: "review", version, status: "approved", revision: uploaded.revision })).json();
+  assert.equal((await confirm(approved.revision)).status, 200);
+  const state = (await (await send("/api/state", "viewer")).json()).state;
+  assert.equal(state.production.shots[shot].keyframe, version);
+  assert.equal(state.selected[shot], "03-fixed");
+  assert.equal(state.versions.find(({ id }) => id === "03-fixed").status, "approved");
+});

@@ -57,7 +57,7 @@ async function sampledFrames(version) {
   }
 }
 
-export function setupProduction({ $, element, button, context, commit, modelSettings, checkFile }) {
+export function setupProduction({ $, element, button, context, commit, modelSettings, checkFile, jumpToShot }) {
   const dialog = $("production-dialog");
   const content = $("production-body");
   const notice = $("production-notice");
@@ -67,11 +67,15 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     notice.classList.toggle("error", error);
     notice.hidden = !text;
   }
-  function open(title) {
+  function open(title, wide = false) {
     message();
+    dialog.classList.toggle("visual-board-dialog", wide);
     content.replaceChildren();
-    $("production-title").textContent = title;
+    const heading = $("production-title");
+    heading.textContent = title;
     if (!dialog.open) dialog.showModal();
+    dialog.scrollTop = 0;
+    heading.focus({ preventScroll: true });
   }
   function field(label, type, options = {}) {
     const wrapper = element("label", label, "production-field");
@@ -438,7 +442,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     content.append(form);
   }
 
-  function attachment({ from, shot, type, frame, reuse }) {
+  function attachment({ from, shot, type, frame, reuse, afterImport }) {
     open(from?.type === type ? "导入外部返工版本" : "导入外部生成版本");
     const video = type === "video";
     const form = element("form", "", "production-form");
@@ -470,13 +474,14 @@ export function setupProduction({ $, element, button, context, commit, modelSett
         upload.set("externalGeneration", "1");
         if (from?.type === type) upload.set("replaces", from.id);
         if (video && frame && (!linkFrame || associate.checked)) upload.set("keyframe", frame.id);
-        await run(null, upload, "/api/upload", () => dialog.close());
+        await run(null, upload, "/api/upload", afterImport ?? (() => dialog.close()));
       } catch (error) {
         message(error.message, true);
       } finally {
         save.disabled = false;
       }
     };
+    if (afterImport) content.append(button("返回关键帧版本", afterImport));
     if (from) content.append(element("p", "原版 · " + from.title + " · " + from.note, "context"));
     content.append(form);
   }
@@ -859,7 +864,157 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     };
   }
 
+  function lockedFrame(shot) {
+    const version = findVersion(config().shots[shot.id]?.keyframe);
+    return version?.shot === shot.id && version.type === "image" && version.status === "approved" ? version : null;
+  }
+
+  function boardReferences(shot) {
+    const row = shot.storyboard;
+    const group = element("div", "", "board-references");
+    const roles = bindings(shot.id).map(({ reference, angle }) => ({ ref: findRef(reference), angle }))
+      .filter(({ ref }) => ref?.confirmedAt);
+    for (const { ref, angle } of roles) {
+      const figure = element("figure");
+      figure.append(image(ref.images[angle].file, ref.name + "参考图"),
+        element("figcaption", ref.name + " · 第 " + ref.edition + " 版 · " + angles[angle]));
+      group.append(figure);
+    }
+    const scene = sceneFor(shot.id);
+    if (scene) {
+      const figure = element("figure");
+      figure.append(image(scene.image.file, scene.name + "场景参考"),
+        element("figcaption", scene.name + " · 第 " + scene.edition + " 版"));
+      group.append(figure);
+    }
+    const missing = row ? castNames(row.characters).filter((name) =>
+      !roles.some(({ ref }) => ref.name.normalize("NFKC").toLowerCase() === name.normalize("NFKC").toLowerCase())) : [];
+    const summary = [
+      row && !roles.length && !castNames(row.characters).length ? "空镜 · 无出场角色" : "",
+      missing.length ? "未绑定角色 · " + missing.join("、") : "",
+      !row && !roles.length ? "未绑定角色参考" : "",
+      !scene ? "未绑定场景参考" : "",
+    ].filter(Boolean);
+    const section = element("section", "", "board-card-section");
+    section.append(element("h4", "已绑定参考"));
+    if (group.childElementCount) section.append(group);
+    if (summary.length) section.append(element("p", summary.join("　"), "context"));
+    return section;
+  }
+
+  function boardFindings(shot, versions) {
+    const section = element("section", "", "board-card-section");
+    const findings = element("ul", "", "board-findings");
+    for (const version of new Set(versions.filter(Boolean))) {
+      const location = (time) => version.type === "video" ? " · " + time + " 秒" : "";
+      for (const check of version.qualityChecks ?? []) {
+        if (check.outcome === "pass") continue;
+        const item = element("li");
+        item.append(button(qualityCategories[check.category] + " · " + qualityOutcomes[check.outcome] + location(check.time),
+          () => qualityDetail(version, check, shot)), element("p", check.note, "context"));
+        findings.append(item);
+      }
+      for (const issue of version.issues ?? []) {
+        const item = element("li");
+        item.append(button((findRef(issue.reference)?.name ?? "角色") + " · " + issue.feature + location(issue.time),
+          () => compare(version, issue)), element("p", issue.note, "context"));
+        findings.append(item);
+      }
+    }
+    section.append(element("h4", findings.childElementCount ? "问题与待复核提示 · " + findings.childElementCount : "问题与待复核提示"));
+    section.append(findings.childElementCount ? findings : element("p", "当前素材暂无问题记录", "context"));
+    return section;
+  }
+
+  function showVisualBoard() {
+    open("可视化分镜板", true);
+    const { clips, state } = context();
+    if (!clips.length) {
+      content.append(element("p", "项目还没有镜头。新增镜头或在「故事与分镜」应用已确认的分镜后，即可在这里查看。", "context"));
+      return;
+    }
+    const grid = element("div", "", "visual-board-grid");
+    let start = 0;
+    for (const [index, shot] of clips.entries()) {
+      const frame = lockedFrame(shot);
+      const selected = findVersion(state.selected[shot.id]);
+      const versions = state.versions.filter(({ shot: id }) => id === shot.id);
+      const latest = versions.findLast(({ status }) => status === "pending");
+      const still = frame ?? (selected?.type === "image" ? selected : null);
+      const card = element("article", "", "visual-board-card");
+      const row = shot.storyboard;
+      const number = String(index + 1).padStart(2, "0");
+      const time = String(Math.floor(start / 60)).padStart(2, "0") + ":" + String(start % 60).padStart(2, "0");
+      start += shot.duration;
+      card.append(element("p", "镜头 " + number + " · " + time + " · " + shot.duration + " 秒", "board-time"),
+        element("h3", shot.title));
+      const figure = element("figure", "", "board-media");
+      if (still) figure.append(image(still.file, still.title));
+      else if (selected?.type === "video") {
+        const video = reviewMedia(selected);
+        video.preload = selected.poster ? "none" : "metadata";
+        if (selected.poster) video.poster = selected.poster;
+        video.setAttribute("aria-label", "已选视频预览");
+        figure.append(video);
+      } else figure.append(element("div", "暂无画面", "board-placeholder"));
+      figure.append(element("figcaption", frame ? "已确认关键帧 · " + frame.title : selected ? "已选素材 · 关键帧未确认" : "关键帧未确认"));
+      card.append(figure);
+      if (row) {
+        card.append(element("p", [row.scene, row.framing].filter(Boolean).join(" · "), "context"));
+        if (row.action !== shot.title) card.append(element("p", row.action, "board-action"));
+        if (row.dialogue) card.append(element("p", "对白 · " + row.dialogue, "board-action"));
+        if (row.costume) card.append(element("p", "服装 · " + row.costume, "context"));
+      } else if (shot.context) card.append(element("p", shot.context, "board-action"));
+      card.append(boardReferences(shot), boardFindings(shot, [frame, selected, latest]));
+      const actions = element("div", "", "actions board-actions");
+      const candidates = versions.filter(({ type, status }) => type === "image" && status === "pending").length;
+      actions.append(button("查看审核", () => { dialog.close(); jumpToShot(shot.id); }),
+        button("关键帧版本" + (candidates ? "（" + candidates + " 待审）" : ""), () => showBoardFrames(shot), "pick"));
+      card.append(actions);
+      grid.append(card);
+    }
+    content.append(grid);
+  }
+
+  function showBoardFrames(shot) {
+    open("关键帧版本 · " + shot.title);
+    const frame = lockedFrame(shot);
+    const refresh = () => showBoardFrames(shot);
+    const actions = element("div", "", "actions");
+    actions.append(button("返回分镜板", showVisualBoard));
+    if (writable()) {
+      actions.append(button("导入关键帧候选", () => attachment({ shot, type: "image", afterImport: refresh }), "pick"),
+        button("生成关键帧", () => preparation(shot, "image")));
+      if (frame) actions.append(button("用当前关键帧生成视频", () => preparation(shot, "video")));
+    }
+    content.append(actions);
+    const images = context().state.versions.filter(({ shot: id, type }) => id === shot.id && type === "image").reverse();
+    if (!images.length) content.append(element("p", "此镜头还没有关键帧候选。", "context"));
+    const status = { pending: "待审", approved: "可确认", rejected: "已退回" };
+    const grid = element("div", "", "visual-board-grid");
+    for (const version of images) {
+      const current = frame?.id === version.id;
+      const card = element("article", "", "visual-board-card");
+      const figure = element("figure", "", "board-media");
+      figure.append(image(version.file, version.title),
+        element("figcaption", current ? "当前关键帧" : status[version.status]));
+      card.append(element("h3", version.title), figure);
+      const prior = findVersion(version.replaces);
+      if (prior) card.append(element("p", "替换自 · " + prior.title, "context"));
+      if (writable() && version.status === "pending") {
+        card.append(button("通过初审", () =>
+          run({ kind: "review", version: version.id, status: "approved", note: version.note ?? "" }, null, "/api/review", refresh)));
+      } else if (writable() && version.status === "approved" && !current) {
+        card.append(button("确认为关键帧", () =>
+          run({ kind: "lockFrame", shot: shot.id, version: version.id }, null, "/api/production", refresh), "pick"));
+      }
+      grid.append(card);
+    }
+    content.append(grid);
+  }
+
   function renderShot(shot, ready) {
+    $("visual-board").hidden = !ready;
     $("project-references").hidden = !ready;
     $("project-scenes").hidden = !ready;
     $("project-settings").hidden = !ready;
@@ -945,6 +1100,7 @@ export function setupProduction({ $, element, button, context, commit, modelSett
     }
     return section;
   }
+  $("visual-board").onclick = showVisualBoard;
   $("project-references").onclick = showReferences;
   $("project-scenes").onclick = showScenes;
   $("project-settings").onclick = showSettings;
